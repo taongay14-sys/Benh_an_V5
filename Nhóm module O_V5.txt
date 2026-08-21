@@ -1,0 +1,1480 @@
+####################################################################################################
+
+O_MODULE_REGISTRY = {O1, O2, O3, O4, O5, O7, O8, O9, O10, O11, O12, O13}.
+O_RENDER_LIST và O_RENDER_ORDER là plan của ROUND hiện tại do G_STATE tạo; không có thứ tự O canonical/default toàn hệ thống.
+O chỉ render module nằm trong plan và không tự chạy C.
+
+O_SELECTIVE_RULES — LUẬT RENDER SELECTIVE
+Version: BA S-G-A-C-O v3
+
+>>> READ-LOCK: O_SELECTIVE_RULES
+- O chỉ render output nằm trong O_RENDER_LIST theo O_RENDER_ORDER.
+- Nếu O không phụ thuộc C, O render từ full current A_STATE hiện hành.
+- Nếu O phụ thuộc Cx, G_STATE phải đưa Cx vào C_RUN_ORDER và O chỉ đọc Cx_STATE cần thiết.
+- G_STATE chỉ dùng để điều phối O_RENDER_LIST và O_RENDER_ORDER; O không lấy dữ kiện bệnh án từ G_STATE.
+- O không tự tạo dữ liệu mới, không sửa A_STATE/Cx_STATE và không dùng patch/delta làm nguồn dưới bất kỳ vai trò nào.
+- O không được hợp thức hóa no-data placeholder trong output bệnh án thường quy; nếu O1 phát hiện no-data leak trong source A thường quy thì O1 phải NEEDS_FIX/BLOCKED, không tự sửa A/C và không tự biến no-data thành dữ kiện bình thường.
+- O4/O8 phải áp dụng cùng no-data guard trước render: O4 nếu phát hiện no-data leak trong source C7 thường quy thì O4_RENDER_CHECK = NEEDS_FIX/BLOCKED và yêu cầu sửa/chạy lại C7; O8 nếu phát hiện no-data leak trong source A thường quy thì O8_RENDER_CHECK = NEEDS_FIX/BLOCKED và yêu cầu sửa/chạy lại module A tương ứng.
+- O không được dùng raw input, hidden memory, output cũ hoặc fallback lâm sàng tự tạo để thay no-data placeholder trong source A/C đã bẩn.
+- Khi STEP O render nhiều output, mỗi O_OUTPUT phải là một block/mục riêng theo contract riêng của chính O đó; không bọc toàn bộ STEP O hoặc toàn bộ nhiều O_OUTPUT trong một code block chung.
+- Giữa các O_OUTPUT chỉ được dùng separator trung tính nếu cần phân cách; không được dùng markdown heading “## ...” trùng hoặc gần trùng tiêu đề output chính của O và không được nằm trong code block của O khác.
+- ERR-WRAPPER-MARKDOWN-HEADING nếu wrapper thêm “## ...” trùng output title ngoài code block; ERR-WRAPPER-O1-HEADING-OUTSIDE-CODE nếu có “## KHÁM SƠ BỘ” trước O1 code block; ERR-WRAPPER-O2-HEADING-OUTSIDE-CODE nếu có “## TÓM TẮT BỆNH ÁN” ngoài O2 code block.
+- Với O1, code block phải mở ngay trước “Khám sơ bộ”; wrapper không được có “## KHÁM SƠ BỘ” ngay trước code block O1. Với O2, tiêu đề “TÓM TẮT BỆNH ÁN” phải nằm trong code block O2; wrapper không được có “## TÓM TẮT BỆNH ÁN” ngoài code block.
+- Chỉ O nào có contract bắt buộc code block mới được nằm trong code block của chính O đó; O không yêu cầu code block render dạng text/markdown thường theo contract riêng.
+- O9/O10/O11/O13 phải render thành mục/block riêng bên ngoài code block O1, trừ khi contract riêng của chính O đó yêu cầu code block riêng.
+- Không render nhãn kỹ thuật như O1_OUTPUT/O9_OUTPUT và không render metadata kỹ thuật nếu contract output không yêu cầu.
+<<< END READ-LOCK: O_SELECTIVE_RULES
+
+####################################################################################################
+
+O_PRESENTATION_NORMALIZATION — CHUẨN HÓA TRÌNH BÀY KHI RENDER
+Áp dụng cho toàn bộ module có trong O_MODULE_REGISTRY khi render output.
+Đây là allowlist thao tác trình bày, không phải allowlist sửa nội dung.
+O chỉ được áp dụng các chuẩn hóa trình bày sau:
+1. Viết hoa chữ đầu dòng.
+2. Viết hoa chữ đầu câu sau dấu `.`, `?`, `!`.
+3. Chuẩn hóa khoảng trắng thừa.
+4. Chuẩn hóa khoảng trắng quanh dấu câu.
+5. Chuẩn hóa bullet, indentation, heading và code block theo schema của module.
+6. Chuẩn hóa blank line theo schema của module.
+O phải giữ nguyên nội dung lâm sàng của nguồn A/C.
+Khi module O render từ nguồn A/C hoặc dùng wording copy/nguyên văn/render nguyên nguồn, hiểu là giữ nguyên nội dung lâm sàng và chỉ được áp dụng O_PRESENTATION_NORMALIZATION.
+Mọi thay đổi ngoài allowlist O_PRESENTATION_NORMALIZATION là forbidden và phải route về module nguồn A/C tương ứng.
+Nếu lỗi trong nguồn cần sửa từ ngữ, thuật ngữ, ngày tháng, số liệu, đơn vị hoặc nội dung lâm sàng, O phải BLOCKED/NEEDS_FIX và route về module nguồn A/C tương ứng.
+O_PRESENTATION_NORMALIZATION không tạo source mới, không sửa state A/C/G/S và không sửa source module.
+Module-specific canonical producer boundary thắng global allowlist: khi contract riêng xác định payload upstream là render-ready và producer-owned về text/presentation, O không được dùng các thao tác textual ở trên để sửa capitalization, meaningful punctuation, wording hoặc repair payload đó; source vi phạm contract phải route producer theo recovery riêng. Boundary này không xóa normalization cho text/framing do O sở hữu hoặc module khác vẫn cho phép.
+
+O_CORE_INDEPENDENT_RECOVERY — BARRIER, FAILURE ISOLATION VÀ TARGETED RERENDER
+    1. Barrier và phạm vi
+        STEP O chỉ được bắt đầu khi current C_RUN_ORDER khác NONE và canonical C_GATE_STATUS = PASS, hoặc current C_RUN_ORDER = NONE và STEP C đã skip hợp lệ. `tiếp`/`next` không override A_GATE_STATUS/C_GATE_STATUS non-PASS.
+        Sau khi barrier đạt, mỗi O trong O_RENDER_ORDER là independent terminal renderer với RUN/PASS/BLOCKED/NEEDS_FIX, source allowlist và output boundary của chính O. Không có global O failure chỉ vì một O-local renderer fail.
+    2. O-local error
+        O-local error là lỗi format, mapping, presentation, schema hoặc render do chính O khi direct upstream source của O vẫn current, valid, PASS và consistent.
+        Chỉ O đó fail. Nếu tự sửa được từ current valid source, tự retry đúng O đó trong same-request recovery; không cần user `tiếp`, không rerun A/C và không rerender/invalidate O sạch không liên quan.
+        Nếu cùng O owner + direct source/revision + error + output state không đổi lặp lại, không retry vô hạn: báo exact O error và tiếp tục các O độc lập còn lại. Chỉ dừng toàn recovery path khi phát hiện upstream source defect hoặc thực sự cần user input.
+    3. Upstream source defect / false-PASS
+        Route direct invalid producer owner first. Nếu O phát hiện direct consumed C producer đã báo PASS nhưng current C source malformed, stale, internally inconsistent, thiếu canonical field, sai source revision hoặc vi phạm producer contract, đây là upstream C defect, không phải O-local error. O không sửa C, không fallback raw input/A khác/O cũ/hidden memory và không tiếp tục render trên C source đã biết invalid; route trực tiếp C owner, rerun/revalidate full current C_RUN_ORDER và require C_GATE_STATUS = PASS. Nếu C recovery xác định root owner thực là A thì route A/A_GATE theo S_CORE trước khi resume O.
+        Nếu O trực tiếp consume A và phát hiện A producer đã báo PASS nhưng current A source malformed, stale, internally inconsistent hoặc vi phạm canonical A producer contract, đây là upstream A defect. O không sửa A và không route C làm proxy; route trực tiếp A/A_GATE, rerun full A_RUN_ORDER và require A_GATE_STATUS = PASS. Sau A recovery, chỉ chạy/revalidate C nếu current pending dependency/path thực sự cần C; direct-A renderer như O1 không tạo unrelated C hop chỉ để quay lại O.
+        Sau recovery, chỉ resume/rerender O bị invalidated hoặc chưa render; không global rerender O_RENDER_ORDER.
+    4. Dependency-aware terminal-output invalidation
+        Direct dependency canonical giữ nguyên: O9 → C1; O10 → C2; O11 → C3; O13 → C5. O1 chỉ phụ thuộc mapped A fields theo O1_ALLOWED_SOURCE và không có dependency A15.
+        O đã PASS chỉ eligible rerender khi direct canonical source mà O thực sự consume thay đổi semantic content/revision liên quan, trở thành stale/non-PASS hoặc output trước được chứng minh đã dựa trên invalid source. Không dùng global C revision hoặc việc full STEP C rerun để invalidate O có direct producer không đổi.
+        Ví dụ C3 đổi nhưng C1/C2/C5 được revalidate/REUSE và không đổi: rerender O11; không rerender O9/O10/O13 chỉ vì STEP C đã rerun. A15 đổi không tự invalidate O1 nếu các mapped A field O1 consume không đổi và vẫn valid.
+        Đây là terminal-output rerender eligibility/orchestration, không tạo O_STATE/O_REV. Output O đã PASS là terminal output đã giao; không là clinical state/source, không được dùng để build O mới.
+    5. Owner và anti-loop
+        O-local → chính O; O phát hiện direct C false-PASS → C; O phát hiện direct A false-PASS → A/A_GATE; C xác định A owner → A. Consumer không repair producer. Mọi automatic retry phải tuân progress/anti-loop tại S_CORE; không bịa dữ liệu để đạt PASS.
+
+####################################################################################################
+
+O1 — KHÁM SƠ BỘ
+Version: BA S-G-A-C-O V4
+Update: 27/06/2026 GMT+7 — compact allowlist contract, giữ nguyên logic render O1
+
+O1_READ_LOCK
+    Khi audit, patch, final review hoặc render O1, phải đọc toàn bộ O1 từ header này đến `<<< END O1`; không kết luận hoặc sửa O1 từ diff/đoạn trích/backup.
+
+O1_ROLE
+    O1 là module O strict renderer cho 2 output text block riêng theo đúng thứ tự: `Khám sơ bộ` và `Báo cáo ngắn`, từ dữ liệu đã chuẩn hóa trong full current A_STATE sau A_GATE.
+    O1 chỉ tạo rendered text; O1_OUTPUT nếu có không phải state, không có revision metadata và không là nguồn cho A/C/O khác.
+    O1 không phải O8 bệnh án chi tiết, O2 tóm tắt bệnh án, module hành chính rộng, module cận lâm sàng riêng, đơn thuốc, cảnh báo lâm sàng, hội chứng, chẩn đoán phân biệt hoặc module tự phân tích lại bệnh án.
+    O1 chỉ render hành chính tối thiểu và cận lâm sàng đã có trong block `Báo cáo ngắn` từ A-state allowlist hẹp.
+
+O1_ALLOWED_SOURCE
+    O1 chỉ được đọc các nguồn sau:
+        1. G_STATE của ROUND hiện tại:
+            - Chỉ kiểm O1 có nằm trong O_RENDER_LIST/O_RENDER_ORDER không, đã đến lượt render chưa và metadata điều phối cần thiết.
+            - Không dùng G_STATE làm nguồn dữ kiện bệnh án.
+        2. A_GATE mới nhất:
+            - Chỉ kiểm A_GATE_STATUS = PASS hoặc A_GATE_STATUS = NEEDS_FIX/chưa hợp lệ để block.
+        3. Full current A_STATE mới nhất sau A_GATE, chỉ các field sau:
+            - A1_STATE.A1_TIME nếu có: render dòng thời gian dưới tiêu đề; nếu không có thì bỏ dòng thời gian, không tự tạo.
+            - A1_STATE.A1_REASON: mục 1 “Lý do vào viện”.
+            - A2_STATE.A2_FINAL: mục 2 “Tiền sử”.
+            - A3_STATE.A3_FOR_O1: mục 3 “Bệnh sử”.
+            - A4_STATE.A4_FOR_O1: dòng “Toàn thân”.
+            - A5_STATE.A5_FOR_O1: dòng “Tuần hoàn”.
+            - A6_STATE.A6_FOR_O1: dòng “Hô hấp”.
+            - A7_STATE.A7_FOR_O1: dòng “Tiêu hóa”.
+            - A8_STATE.A8_FOR_O1: dòng “Thận – tiết niệu”.
+            - A9_STATE.A9_FOR_O1: dòng “Thần kinh”.
+            - A10_STATE.A10_HAS_DATA và A10_STATE.A10_FOR_O1: dòng “Cơ xương khớp” chỉ khi A10_HAS_DATA = YES và contract A10_FOR_O1 cho phép xuất dòng.
+            - A11_STATE.A11_HAS_EXTRA, A11_STATE.A11_FOR_O1 và A11_STATE.A11_OTHER_SYSTEMS: extra nếu có và câu kết “Các cơ quan khác”.
+            - A12_STATE.A12_FINAL: mục 5 “∆ sơ bộ”.
+            - A13_STATE.A13_LABS, A13_STATE.A13_IMAGING, A13_STATE.A13_TREATMENT: mục 6 “Hướng điều trị” trong block `Khám sơ bộ`; đây là chỉ định cần làm/hướng điều trị, không phải kết quả đã có.
+            - Cho block `Báo cáo ngắn` chỉ:
+                + A14_STATE.A14_PATIENT_NAME: hành chính tối thiểu, họ tên người bệnh.
+                + A14_STATE.A14_AGE: hành chính tối thiểu, ngày sinh/tuổi/năm sinh.
+                + A14_STATE.A14_SEX: hành chính tối thiểu, giới tính.
+                + A14_STATE.A14_ADDRESS: hành chính tối thiểu, địa chỉ.
+                + A1_STATE.A1_TIME: hành chính tối thiểu, ngày giờ vào viện.
+                + A12_STATE.A12_FINAL: dòng “Chẩn đoán”.
+                + A2_STATE.A2_FINAL: dòng “Tiền sử”.
+                + A3_STATE.A3_FOR_O1: dòng “Bệnh sử”.
+                + A4_STATE.A4_FOR_O1, A5_STATE.A5_FOR_O1, A6_STATE.A6_FOR_O1, A7_STATE.A7_FOR_O1, A8_STATE.A8_FOR_O1, A9_STATE.A9_FOR_O1, A10_STATE.A10_HAS_DATA, A10_STATE.A10_FOR_O1, A11_STATE.A11_HAS_EXTRA và A11_STATE.A11_FOR_O1: các dòng cơ quan bất thường/liên quan nếu đủ điều kiện.
+                + A14_STATE.A14_LABS_RESULT, A14_STATE.A14_IMAGING_RESULT, A14_STATE.A14_OTHER_PARACLINICAL_RESULT: cận lâm sàng đã có trong block `Báo cáo ngắn`.
+    O1 không đọc/dùng A14_STATE ngoài block `Báo cáo ngắn`; không dùng A14 cho block `Khám sơ bộ`; không dùng A14 để sửa lý do vào viện, tiền sử, bệnh sử, chẩn đoán, hướng điều trị hoặc cơ quan bất thường.
+    O1 tuyệt đối không đọc/dùng A15_STATE, bất kỳ C_STATE/Cx_STATE, O_OUTPUT cũ, O1_OUTPUT cũ, rendered output cũ, raw user input như nguồn lâm sàng/render, hidden memory/trí nhớ ẩn, patch/delta, web/guideline ngoài hoặc nguồn ngoài allowlist.
+
+O1_ALLOWED_ACTION
+    O1 RUN/render khi và chỉ khi:
+        1. O1 được G plan trong O_RENDER_LIST hoặc O_RENDER_ORDER của ROUND hiện tại.
+        2. Đã đến lượt O1 theo O_RENDER_ORDER.
+        3. A_GATE_STATUS = PASS.
+        4. Full current A_STATE sau A_GATE hợp lệ.
+        5. Required mapped fields đủ, nhất quán và source sạch theo no-data guard.
+    O1 render full O1 text block từ allowed sources; không render patch/delta.
+    O1 SKIP im lặng khi không được G plan: không render, không tạo/cập nhật O1_OUTPUT và không in O1_OUTPUT = SKIP.
+    O1 BLOCKED/NEEDS_FIX khi gate/source/schema/no-data guard fail.
+    O1 có thể kiểm output bằng O1_RENDER_CHECK/O1_CHECK nội bộ nếu hệ thống cần, nhưng không render check vào bệnh án thường quy.
+    O1 không sửa A/C/G, không sửa O2-O13, không chạy lại A/C/O khác, không tự tạo dữ liệu lâm sàng, không tự bù source thiếu và không dùng output cũ để render lại.
+
+O1_ALLOWED_WRITE
+    O1 chỉ được ghi/render O1_OUTPUT dưới dạng full rendered text nếu contract vận hành dùng field này.
+    O1_OUTPUT không phải state, không là source cho A/C/O khác và không có revision metadata.
+    O1 không ghi A_STATE/Ax_STATE, C_STATE/Cx_STATE, G_STATE, O2-O13, Ax_REV, A_MODULE_REV hoặc metadata revision.
+    Khi SKIP, O1 không render, không tạo/cập nhật O1_OUTPUT và không in O1_OUTPUT dạng SKIP.
+
+O1_RENDER_SCHEMA
+    Khi render thật cho user, O1_OUTPUT phải gồm 2 text code block riêng của O1 theo đúng thứ tự: text code block 1 `Khám sơ bộ`, text code block 2 `Báo cáo ngắn`.
+    Text code block 1 phải mở ngay trước literal heading `Khám sơ bộ`, đóng ngay sau hết mục 6 “Hướng điều trị”. Text code block 2 phải mở ngay trước literal heading `Báo cáo ngắn`, đóng ngay sau phần “Cận lâm sàng”. Không bọc cả hai phần trong cùng một text code block và không bọc nhiều O output trong cùng text code block.
+    Không render nhãn O1_OUTPUT, metadata kỹ thuật, markdown heading, markdown bold, bullet markdown `*`, check/error/REV/STATE_VERSION.
+    Các dòng bắt đầu bằng `-` trong phần khám hoặc báo cáo là văn bản bệnh án thuần trong text code block, không phải markdown bullet điều khiển.
+    Inline section bắt buộc của block `Khám sơ bộ` gồm mục 1 “Lý do vào viện”, mục 2 “Tiền sử”, mục 3 “Bệnh sử” và mục 5 “∆ sơ bộ”: nội dung phải nằm ngay sau dấu `:` cùng dòng, không xuống dòng thủ công và không có dòng trống giữa nhãn với nội dung.
+    Block section của block `Khám sơ bộ` chỉ gồm mục 4 “Khám bệnh” và mục 6 “Hướng điều trị”. Không đổi thứ tự mục, không đổi tên mục, không bỏ ký hiệu `∆ sơ bộ`.
+    Format O1 chuẩn bắt buộc:
+
+        ```text
+        Khám sơ bộ
+        ([A1_TIME nếu có])
+
+        1. Lý do vào viện: [A1_REASON].
+
+        2. Tiền sử: [A2_FINAL].
+
+        3. Bệnh sử: [A3_FOR_O1].
+
+        4. Khám bệnh:
+        - Toàn thân: [A4_FOR_O1].
+        - Tuần hoàn: [A5_FOR_O1].
+        - Hô hấp: [A6_FOR_O1].
+        - Tiêu hóa: [A7_FOR_O1].
+        - Thận – tiết niệu: [A8_FOR_O1].
+        - Thần kinh: [A9_FOR_O1].
+        - Cơ xương khớp: [A10_FOR_O1 nếu A10_HAS_DATA = YES và contract A10_FOR_O1 cho phép xuất dòng].
+        - [A11_FOR_O1 nếu A11_HAS_EXTRA = YES, mỗi dòng bất thường cơ quan ngoài nhóm chính].
+        - Các cơ quan khác: khám sơ bộ chưa phát hiện bất thường.
+
+        5. ∆ sơ bộ: [A12_FINAL].
+
+        6. Hướng điều trị:
+        - Xét nghiệm: [A13_LABS].
+        - Chẩn đoán hình ảnh: [A13_IMAGING].
+        - Điều trị: [A13_TREATMENT].
+        ```
+
+        ```text
+        Báo cáo ngắn
+
+        - Hành chính: [A14_PATIENT_NAME] | [A14_AGE] | [A14_SEX] | [A14_ADDRESS] | [A1_TIME].
+        - Chẩn đoán: [A12_FINAL].
+        - Tiền sử: [A2_FINAL].
+        - Bệnh sử: [A3_FOR_O1].
+        - [Tên cơ quan bất thường]: [nguyên văn A4-A11 field tương ứng nếu bất thường/liên quan].
+        - Cận lâm sàng:
+          + Xét nghiệm: [A14_LABS_RESULT nếu có kết quả đã có].
+          + Siêu âm: [kết quả siêu âm trong A14_IMAGING_RESULT nếu có].
+          + X quang: [kết quả X quang trong A14_IMAGING_RESULT nếu có].
+          + Điện tim: [kết quả điện tim trong A14_IMAGING_RESULT nếu có].
+          + CT: [kết quả CT trong A14_IMAGING_RESULT nếu có].
+          + MRI: [kết quả MRI trong A14_IMAGING_RESULT nếu có].
+          + Nội soi: [kết quả nội soi trong A14_IMAGING_RESULT nếu có].
+          + Khác: [A14_OTHER_PARACLINICAL_RESULT hoặc loại khác nếu có].
+        ```
+    Dòng thời gian trong block `Khám sơ bộ` chỉ render khi có A1_TIME hợp lệ; O1 không tự tạo thời điểm.
+    Dòng `- Cận lâm sàng:` trong block `Báo cáo ngắn` luôn render; nếu không có cận lâm sàng đã có từ A14 thì để trống sau label, không thêm dòng con và không thêm fallback.
+
+O1_LOGIC_RULES
+    Mỗi dòng output phải traceable về đúng field trong O1_ALLOWED_SOURCE; O1 không tự suy luận lại dữ liệu đã được A chốt.
+    A2_FINAL và các field A được giữ nguyên nội dung lâm sàng theo nguồn; O1 chỉ được áp dụng O_PRESENTATION_NORMALIZATION khi render trình bày. O1 không sửa chính tả, từ ngữ, thuật ngữ, ngày tháng, số liệu, đơn vị hoặc nội dung lâm sàng; lỗi nguồn ngoài allowlist presentation phải BLOCKED/NEEDS_FIX và route về module A tương ứng. Không tự thêm dị ứng thuốc/không ghi nhận dị ứng thuốc hoặc tiền sử khác nếu A2_FINAL không có.
+    A4_FOR_O1 chỉ là nguồn dòng “Toàn thân”; không gọi A4 là sinh tồn rộng và không tự thêm mạch, huyết áp, nhịp thở, SpO2, hạch ngoại vi hoặc tuyến giáp nếu nguồn không có.
+    Các dòng tuần hoàn/hô hấp/tiêu hóa/thận–tiết niệu/thần kinh lấy lần lượt từ A5/A6/A7/A8/A9 theo mapping, không gộp sai vào A4.
+    A10 optional rule: dòng “Cơ xương khớp” chỉ render khi A10_HAS_DATA = YES và A10_FOR_O1 cho phép xuất dòng; nếu A10_HAS_DATA = NO hoặc contract A10 nói không xuất, bỏ dòng, không render no-data literal và không tự thêm “Cơ xương khớp bình thường”.
+    A11 rule: nếu A11_HAS_EXTRA = YES, render A11_FOR_O1 trước câu kết; dù có extra hay không, luôn render câu kết từ A11_OTHER_SYSTEMS với ý “Các cơ quan khác: khám sơ bộ chưa phát hiện bất thường.” ở cuối phần Khám.
+    A13 rule: A13_LABS và A13_IMAGING trong O1 là hướng cần làm ở mục 6, không phải kết quả cận lâm sàng đã có; A13_TREATMENT là hướng điều trị/xử trí, không lấy thuốc cụ thể từ A15.
+    Nếu module nguồn quy định không xuất dòng optional thì O1 bỏ dòng đó, ngoại trừ câu kết A11_OTHER_SYSTEMS vẫn luôn render theo contract A11.
+    Báo cáo ngắn traceability: hành chính traceable từ A14_PATIENT_NAME/A14_AGE/A14_SEX/A14_ADDRESS và A1_TIME; chẩn đoán traceable từ A12_FINAL; tiền sử traceable từ A2_FINAL; bệnh sử traceable từ A3_FOR_O1; cơ quan bất thường traceable từ A4-A11 field tương ứng; cận lâm sàng traceable từ A14_LABS_RESULT/A14_IMAGING_RESULT/A14_OTHER_PARACLINICAL_RESULT.
+    Cơ quan bất thường trong `Báo cáo ngắn`: chỉ render cơ quan bất thường/liên quan rõ; Toàn thân từ A4_FOR_O1, Tuần hoàn từ A5_FOR_O1, Hô hấp từ A6_FOR_O1, Tiêu hóa từ A7_FOR_O1, Thận – tiết niệu từ A8_FOR_O1, Thần kinh từ A9_FOR_O1, Cơ xương khớp từ A10_FOR_O1 nếu A10_HAS_DATA = YES và không phải literal không xuất dòng, Cơ quan khác/extra từ A11_FOR_O1 nếu A11_HAS_EXTRA = YES; không render cơ quan bình thường, không render no-data/fallback cơ quan, không render nhãn “Cơ quan bị bệnh”, không render A11_OTHER_SYSTEMS như cơ quan bất thường và không suy cơ quan từ A12/C_STATE/raw/hidden.
+    Cận lâm sàng trong `Báo cáo ngắn`: A14_LABS_RESULT là xét nghiệm đã có; A14_IMAGING_RESULT chỉ được tách thành Siêu âm, X quang, Điện tim, CT, MRI, Nội soi hoặc loại khác khi A14 ghi/phân loại rõ; A14_OTHER_PARACLINICAL_RESULT là Khác nếu có; không tự đoán loại, không tự tạo kết quả.
+    Không trộn A13 và A14: A13_LABS/A13_IMAGING trong `Khám sơ bộ` vẫn là chỉ định cần làm/hướng điều trị; A14 trong `Báo cáo ngắn` là kết quả cận lâm sàng đã có; không dùng A13_LABS/A13_IMAGING làm cận lâm sàng đã có.
+
+O1_SPECIAL_RULES
+    A14/A15/C boundary: A14 chỉ được đọc cho block `Báo cáo ngắn` theo allowlist hẹp; A14 không dùng cho block `Khám sơ bộ`; O1 không đọc A15, không tự lấy thuốc cụ thể từ A15, không đọc C_STATE/Cx_STATE và không lấy hội chứng/cảnh báo/chẩn đoán phân biệt/tổng hợp C.
+    No-data leak guard: trước khi render hoàn chỉnh, O1 phải kiểm toàn bộ field nguồn thường quy sẽ dùng: A1_TIME nếu có, A1_REASON, A2_FINAL, A3_FOR_O1, A4_FOR_O1, A5_FOR_O1, A6_FOR_O1, A7_FOR_O1, A8_FOR_O1, A9_FOR_O1, A10_FOR_O1 nếu A10_HAS_DATA = YES, A11_FOR_O1/A11_OTHER_SYSTEMS theo contract, A12_FINAL, A13_LABS, A13_IMAGING, A13_TREATMENT.
+    Các cụm no-data leak cần chặn, không phân biệt viết hoa/thường và có thể có dấu câu liền kề: “chưa có dữ kiện”; “chưa ghi nhận dữ kiện”; “chưa có dữ liệu”; “trong dữ liệu cung cấp”; “chưa ghi nhận bất thường rõ”; “Chưa ghi nhận dữ kiện dị ứng thuốc”.
+    Nếu source field chứa no-data leak, O1_RENDER_CHECK hoặc O1_CHECK = NEEDS_FIX/BLOCKED, O1 không render bản `Khám sơ bộ`/`Báo cáo ngắn` hoàn chỉnh, phải báo rõ source A field cần sửa nếu hệ thống yêu cầu và không hợp thức hóa placeholder thành nội dung bệnh án thường quy.
+    O1 không tự tạo lý do vào viện, tiền sử, bệnh sử, khám thực thể, chẩn đoán, hướng điều trị, xét nghiệm, chẩn đoán hình ảnh, cận lâm sàng đã có, cơ quan bất thường, thuốc, dị ứng, thông tin hành chính, hội chứng, cảnh báo hoặc chẩn đoán phân biệt. Với riêng dòng `- Cận lâm sàng:` trong block `Báo cáo ngắn`, nếu không có kết quả A14 thì label được render trống theo user chốt, không phải lỗi và không thêm fallback.
+    Nếu source thiếu hoặc bẩn, O1 block/NEEDS_FIX; không tự sửa bằng raw input, hidden memory hoặc output cũ.
+    Không dùng “âm tính/dương tính” cho dấu khám; nếu nguồn A hợp lệ có dấu khám có/không thì render bằng `(-)`/`(+)` và giữ đúng nghĩa nguồn.
+    PLAN_9/PLAN_OUTSIDE_RECORD không làm O1 render formal, không tạo O1_OUTPUT, không mutate state và không biến O1 thành module trả lời outside-record.
+    Metadata điều phối/check/error chỉ dùng nội bộ nếu có contract; không đưa metadata kỹ thuật vào `Khám sơ bộ` hoặc `Báo cáo ngắn`.
+    Sau O1, hệ thống render O tiếp theo theo đúng G_STATE.O_RENDER_ORDER; O1 không tự chạy O2, không gọi A/C, không sửa state và không giả định mình luôn là output đầu tiên/cuối cùng.
+
+O1_CHECK_PASS_IF
+    PASS khi tất cả điều kiện sau đúng:
+        1. O1 được G plan và đã đến lượt.
+        2. A_GATE_STATUS = PASS.
+        3. Full current A_STATE sau A_GATE hợp lệ.
+        4. Required mapped fields có mặt, nhất quán và source sẽ render sạch, không có no-data leak.
+        5. Output đúng O1_RENDER_SCHEMA: có 2 text code block riêng, block 1 heading `Khám sơ bộ`, block 2 heading `Báo cáo ngắn`, không bọc chung, không render metadata/check/error.
+        6. Block `Khám sơ bộ` giữ thứ tự mục 1-6, inline/block format, A1-A13 mapping đúng, A10 optional rule đúng, A11 extra/conclusion rule đúng, A13 treatment-direction rule đúng và không dùng A14.
+        7. Block `Báo cáo ngắn` có các dòng bắt buộc `Hành chính`, `Chẩn đoán`, `Tiền sử`, `Bệnh sử`, `Cận lâm sàng`; hành chính traceable từ A14/A1; chẩn đoán từ A12; tiền sử từ A2; bệnh sử từ A3.
+        8. Không có nhãn “Cơ quan bị bệnh”; các dòng cơ quan nếu có đều traceable từ A4-A11 tương ứng, không render cơ quan bình thường, không render A11_OTHER_SYSTEMS như cơ quan bất thường và không suy cơ quan từ A12.
+        9. Cận lâm sàng traceable từ A14_LABS_RESULT/A14_IMAGING_RESULT/A14_OTHER_PARACLINICAL_RESULT và phân loại đúng; nếu không có A14 cận lâm sàng thì dòng `Cận lâm sàng` để trống, không fallback; không dùng A13 làm cận lâm sàng đã có.
+        10. Mỗi dòng render traceable tới allowed source và không dùng A15/C_STATE/Cx_STATE/O output cũ/raw user input/hidden memory/web/guideline/source ngoài allowlist.
+    Khi đạt, O1_RENDER_CHECK nội bộ = PASS nếu hệ thống dùng, nhưng không render O1_RENDER_CHECK vào bệnh án thường quy.
+
+O1_NEEDS_FIX_IF
+    NEEDS_FIX/BLOCKED khi có bất kỳ điều kiện sau:
+        1. O1 được G plan nhưng A_GATE_STATUS thiếu, = NEEDS_FIX hoặc chưa hợp lệ.
+        2. Full current A_STATE thiếu/không hợp lệ hoặc required mapped field thiếu.
+        3. Source field có no-data leak hoặc output cần dữ liệu tự bịa mới render được.
+        4. A10_HAS_DATA/A10_FOR_O1 mâu thuẫn; A11_HAS_EXTRA/A11_FOR_O1/A11_OTHER_SYSTEMS mâu thuẫn; mapping A13 thiếu hoặc lẫn A14/A15.
+        5. Output sai text code block, chỉ có 1 text code block, thiếu block `Báo cáo ngắn`, sai heading, sai thứ tự mục, sai inline/block format hoặc render metadata/check/error.
+        6. Block `Báo cáo ngắn` thiếu dòng bắt buộc, có nhãn “Cơ quan bị bệnh”, suy cơ quan bất thường từ A12, render cơ quan bình thường, render A11_OTHER_SYSTEMS như cơ quan bất thường, hoặc render fallback cơ quan khi không có bất thường.
+        7. Cận lâm sàng trong `Báo cáo ngắn` lấy từ A13_LABS/A13_IMAGING, biến chỉ định cần làm thành kết quả đã có, tự tạo kết quả, phân loại không traceable từ A14, hoặc khi không có cận lâm sàng lại render fallback không được user chốt.
+        8. A14 dùng ngoài block `Báo cáo ngắn`, A14 dùng cho block `Khám sơ bộ`, hoặc A14 dùng để sửa lý do vào viện, tiền sử, bệnh sử, chẩn đoán, hướng điều trị hoặc cơ quan bất thường.
+        9. Hành chính lấy từ raw input/hidden memory/output cũ thay vì A14/A1 state hợp lệ.
+        10. Output đọc/dùng C_STATE/Cx_STATE, A15, raw input, hidden memory, old O/O1 output, patch/delta, web/guideline ngoài hoặc nguồn ngoài allowlist.
+
+O1_ERROR_RULE
+    Khi NEEDS_FIX/BLOCKED, O1 không render full `Khám sơ bộ`/`Báo cáo ngắn`; báo rõ source field thiếu/bẩn nếu hệ thống yêu cầu; không sửa A/C/G/O, không gọi A/C/O, không dùng raw input/hidden memory/output cũ để fill và không biến lỗi kỹ thuật thành nội dung khám sơ bộ hoặc báo cáo ngắn.
+    Khi SKIP, O1 không tạo hoặc in O1_OUTPUT dạng SKIP.
+    Khi PASS, check nội bộ nếu có không được render vào bệnh án thường quy.
+
+O1_REUSE_RULE
+    Contract O1 không cho reuse từ old O1_OUTPUT hoặc bất kỳ rendered output cũ nào.
+    O1 không đọc output cũ và phải re-render từ current allowed state khi G plan O1.
+
+O1_END
+    <<< END O1
+
+
+
+
+####################################################################################################
+
+O2 — TÓM TẮT BỆNH ÁN
+Version: BA S-G-A-C-O V4 compact
+Update: 27/06/2026 GMT+7 — allowlist compact, giữ khóa semantic source-preserve C4_FOR_O2 + O_PRESENTATION_NORMALIZATION
+
+O2_ROLE
+    O2 là strict renderer/output selective thuộc layer O cho phần “TÓM TẮT BỆNH ÁN”.
+    Khung text code block thứ nhất của O2 chỉ render heading, một câu mở đầu từ allowed A fields và body giữ nguyên canonical producer payload C4_STATE.C4_FOR_O2 về capitalization, wording, meaningful punctuation, nội dung lâm sàng, danh sách, thứ tự và cấu trúc semantic. Với riêng body C4_FOR_O2, O2 chỉ được packaging code block/blank line không đổi ký tự payload; capitalization normalization vẫn áp dụng cho heading/opening/framing do O2 sở hữu và source khác theo contract hiện hành.
+    O2 conditionally render thêm một text code block presentation-only về cận lâm sàng đã làm từ đúng ba field A14 result được allowlist; O2 chỉ deterministic full-field mapping, không tạo, suy luận, chọn lọc hoặc semantic summarize kết quả.
+    O2 không tự tạo/chọn lại hội chứng, không phân loại triệu chứng thành hội chứng, không chuyển hội chứng thành chẩn đoán, không tự thêm chẩn đoán, điều trị, thuốc, bệnh trình, tổng kết hoặc kết quả cận lâm sàng không có trong ba field A14 result được allowlist.
+    O2 không sửa C4/A14, không render O khác, không sửa A/C/G/O khác.
+    O2_OUTPUT nếu có là rendered text, không phải state, không là source cho A/C/O khác và không có revision metadata riêng.
+
+O2_ALLOWED_SOURCE
+    O2 chỉ được đọc:
+        1. G_STATE của ROUND hiện tại:
+            - Chỉ đọc O_RENDER_LIST, O_RENDER_ORDER, thứ tự render ROUND hiện tại.
+            - Chỉ đọc C_RUN_ORDER để xác nhận C4 đã chạy trước O2 nếu O2 formal output được yêu cầu.
+            - Không dùng G_STATE làm dữ kiện bệnh án.
+        2. A_GATE:
+            - Chỉ để kiểm A_GATE_STATUS = PASS và full current A_STATE hợp lệ.
+        3. Full current A_STATE sau A_GATE_STATUS = PASS, theo phạm vi tách biệt:
+            - Chỉ cho câu mở đầu: A1_STATE.A1_REASON hoặc field lý do vào viện tương đương; A2_STATE.A2_FINAL hoặc field tiền sử tương đương nếu có; A3_STATE chỉ cho số ngày bệnh/thời gian bệnh nếu đã chuẩn hóa rõ, trực tiếp, duy nhất và đủ chắc chắn; A14_STATE.A14_AGE và A14_STATE.A14_SEX hoặc field tuổi/giới tương đương. Nếu A3_STATE không cung cấp được giá trị ngày bệnh rõ như vậy thì coi mệnh đề ngày bệnh là unavailable optional, không phải missing required source.
+            - Chỉ cho text code block thứ hai về cận lâm sàng đã làm: A14_STATE.A14_IMAGING_RESULT, A14_STATE.A14_LABS_RESULT và A14_STATE.A14_OTHER_PARACLINICAL_RESULT.
+            - Ba A14 result field này không dùng trong câu mở đầu, không dùng trong body khung thứ nhất, không thay C4_STATE.C4_FOR_O2 và không mở quyền cho A14_SUMMARY_FOR_O hoặc A14 field khác.
+            - Không đọc A_STATE ngoài mapping này để thêm nội dung body.
+        4. C_GATE:
+            - Chỉ để kiểm C_GATE_STATUS = PASS và C_STATE/C4_STATE hợp lệ vì O2 phụ thuộc C4.
+        5. C4_STATE:
+            - Chỉ đọc C4_CHECK.
+            - Chỉ đọc C4_STATE.C4_FOR_O2.
+            - C4_STATE.C4_FOR_O2 là nguồn chính và bắt buộc cho toàn bộ các dòng thuộc body khung code thứ nhất sau câu mở đầu; C4_FOR_O2 không phải source của khung code thứ hai, vì khung code thứ hai chỉ dùng đúng ba A14 result field được allowlist.
+    O2 không được đọc/dùng raw user input, hidden memory/trí nhớ ẩn, output cũ, O2_OUTPUT cũ, rendered output cũ, A/C patch làm nguồn chính, A/C ngoài mapping, C4_ITEMS, C4_SYNDROME_SUMMARY, C5_STATE.C5_FOR_O2, A12_STATE/A13_STATE/A15_STATE để thêm nội dung, A14_SUMMARY_FOR_O, A14_CURRENT_FOR_O2, legacy tình trạng ra viện từ A14, A14 metadata/check/error làm rendered content, C4_FOR_O2 làm source khung thứ hai, C1 để biến chỉ định thành kết quả, web/guideline/source ngoài hoặc metadata kỹ thuật để render nội dung.
+
+O2_ALLOWED_ACTION
+    O2 RUN/render chỉ khi đồng thời:
+        1. O2 nằm trong G_STATE.O_RENDER_LIST hoặc G_STATE.O_RENDER_ORDER.
+        2. Đã đến lượt theo G_STATE.O_RENDER_ORDER.
+        3. A_GATE_STATUS = PASS và full current A_STATE hợp lệ.
+        4. C_GATE_STATUS = PASS.
+        5. C4_CHECK = PASS.
+        6. C4 đã được G đưa vào C_RUN_ORDER trước O2.
+        7. C4_STATE.C4_FOR_O2 có mặt, hợp lệ, render-ready, PASS defensive capitalization check cùng invariant producer C4 sau prefix “- ”/“  + ” và sau “.”/“:”, và không chứa nội dung bị cấm output.
+        8. Nguồn bắt buộc cho câu mở đầu có mặt hoặc có xử lý no-data sạch theo contract.
+        9. Ba field A14_IMAGING_RESULT, A14_LABS_RESULT và A14_OTHER_PARACLINICAL_RESULT đều có mặt, canonical/render-ready và được phân loại bằng exact no-data mapping cho khung thứ hai.
+    O2 SKIP khi O2 không nằm trong render plan hoặc chưa đến lượt; khi SKIP không output, không tạo/cập nhật O2_OUTPUT và không in O2_OUTPUT = SKIP.
+    O2 BLOCKED/NEEDS_FIX khi thiếu nguồn bắt buộc, gate/check không PASS, thiếu hoặc sai C4_FOR_O2, C4_FOR_O2 còn “Không áp dụng.”, có dòng phủ định cận lâm sàng, có block giả hội chứng, ba A14 result field thiếu/sai/không canonical/không render-ready hoặc cần sửa nguồn A14/C4 mới render đúng.
+    Khung thứ hai chỉ được xét và render trong cùng một O2 RUN thành công; không được render độc lập, không được dùng A14 để bù A_GATE/C_GATE/C4_CHECK/C4_FOR_O2 fail và khi source A14 invalid không render partial O2.
+    O2 không tự sửa/chạy C4, không tự sửa/chạy A, không tự sửa G, không tự render/thay O1 hoặc O3-O13, không tự tạo dữ liệu bệnh án, không tự bù dữ liệu thiếu và không dùng output cũ để render lại.
+
+O2_ALLOWED_WRITE
+    O2 chỉ được ghi/render O2_OUTPUT hoặc rendered text nếu contract vận hành dùng field này.
+    O2 có thể dùng nội bộ O2_RENDER_CHECK và O2_ERROR nếu hệ thống dùng check.
+    O2 không render metadata check/error vào bệnh án thường quy.
+    O2 không ghi O2_STATE, O2_FINAL, O2_REV, G_STATE, A_STATE, C_STATE, C4_STATE, O1, O3-O13, A1-A15 hoặc C1-C7.
+
+O2_RENDER_SCHEMA
+    Khung thứ nhất phải là text code block hiện hành, mở ngay trước heading “TÓM TẮT BỆNH ÁN” và đóng ngay sau dòng cuối cùng của body exact-preserve ký tự canonical C4_STATE.C4_FOR_O2, gồm capitalization và meaningful punctuation; chỉ packaging code block/blank line được phép, không textual normalization body.
+    Nếu cả ba A14 result field bằng exact canonical no-data literal riêng thì O2 có đúng một text code block là khung thứ nhất; không render khung thứ hai, heading “Cận lâm sàng:”, no-data literal hoặc empty code block.
+    Nếu ít nhất một A14 result field có nội dung thật thì O2 có đúng hai text code block riêng đều mang language label `text`: đóng fence khung thứ nhất, đúng một physical blank line, mở fence khung thứ hai; không dùng `---`, không có prose/heading/nhãn ngoài hai block và không gộp hai block.
+    Line đầu tiên trong text code block phải đúng literal “TÓM TẮT BỆNH ÁN”; không đổi thành “Tóm tắt bệnh án”, “TÓM TẮT BA”, markdown heading hoặc heading ngoài text code block.
+    Không có dòng trống giữa heading và câu mở đầu; không có dòng trống giữa câu mở đầu và dòng đầu tiên của C4_FOR_O2.
+    Format bắt buộc có 2 biến thể opening hợp lệ:
+        ```text
+        TÓM TẮT BỆNH ÁN
+        Bệnh nhân [nam/nữ], [tuổi] tuổi, [tiền sử nếu có], vào viện ngày thứ [số ngày bệnh] của bệnh vì [lý do vào viện]. Qua thăm khám phát hiện các hội chứng và triệu chứng sau:
+        hoặc
+        Bệnh nhân [nam/nữ], [tuổi] tuổi, [tiền sử nếu có], vào viện vì [lý do vào viện]. Qua thăm khám phát hiện các hội chứng và triệu chứng sau:
+        [EXACT-PRESERVE CANONICAL C4_STATE.C4_FOR_O2; KHÔNG CAPITALIZATION REPAIR]
+        ```
+    Biến thể có ngày bệnh chỉ dùng khi số ngày bệnh trực tiếp, rõ, duy nhất và hợp lệ từ A3_STATE. Biến thể không có ngày bệnh dùng khi day clause unavailable optional; câu phải nối trực tiếp “vào viện vì [lý do vào viện]”, không có hai dấu phẩy liên tiếp, không khoảng trắng thừa, không “vào viện, vì”, không “vào viện ngày thứ của bệnh” và không câu khuyết.
+    Schema trên không phải nội dung mẫu mặc định để copy vào ca bệnh thật.
+    Khung thứ hai bắt buộc có first content line exact `Cận lâm sàng:`; sau đó render toàn bộ field eligible theo đúng thứ tự A14_IMAGING_RESULT → `Xét nghiệm: [A14_LABS_RESULT]` → `Cận lâm sàng khác: [A14_OTHER_PARACLINICAL_RESULT]`, omit sạch field exact no-data và không có blank separator giữa các group.
+    A14_IMAGING_RESULT render nguyên các dòng/item ngay dưới heading, không wrapper; labs và other dùng đúng label trên. Bảy combination imaging-only, labs-only, other-only, imaging+labs, imaging+other, labs+other và cả ba đều theo cùng conditional mapping, không render placeholder schema.
+    Khung thứ hai không chứa `TÓM TẮT BỆNH ÁN`, `Điều trị:`, numbering, bullet, generated modality label, placeholder hoặc metadata.
+
+O2_LOGIC_RULES
+    Canonical exact no-data mapping cho khung thứ hai: A14_LABS_RESULT = `Chưa có kết quả xét nghiệm được cung cấp.`; A14_IMAGING_RESULT = `Chưa có kết quả chẩn đoán hình ảnh được cung cấp.`; A14_OTHER_PARACLINICAL_RESULT = `Chưa có kết quả cận lâm sàng khác được cung cấp.`.
+    O2 chỉ so exact whole-field equality, case-sensitive, với literal riêng của field; không trim malformed value thành sentinel hợp lệ, không fuzzy/substring/case-insensitive/synonym/arbitrary-sentinel matching. Missing, null, blank, whitespace-only, NONE, NULL, SKIP, N/A, wording noncanonical hoặc malformed là invalid và làm O2 BLOCKED/NEEDS_FIX, không partial render.
+    Nếu cả ba field exact no-data thì không render khung thứ hai. Nếu ít nhất một field có nội dung thật thì render khung thứ hai, omit riêng field exact no-data và giữ toàn bộ field còn lại theo fixed order imaging → labs → other; không render no-data literal, empty label/line/separator/block.
+    Full-content builder coi mỗi field A14 eligible là canonical source content: giữ field-internal item order, canonical physical/logical lines, kết quả bình thường và bất thường, trị số, đơn vị, dấu so sánh, range, modality, vị trí giải phẫu, bên, kết luận, ngày/giờ, punctuation mang nghĩa và số lần xuất hiện; không flatten multiline làm đổi source structure và chỉ áp dụng O_PRESENTATION_NORMALIZATION.
+    Câu mở đầu tạo từ allowed A fields: giới, tuổi, tiền sử nếu có, số ngày bệnh/thời gian bệnh đã chuẩn hóa rõ và lý do vào viện.
+    O2 phải viết một trong hai dạng hợp lệ: “vào viện ngày thứ [số ngày bệnh] của bệnh vì [lý do vào viện]” khi có ngày bệnh rõ, hoặc “vào viện vì [lý do vào viện]” khi không có ngày bệnh rõ.
+    Số ngày bệnh chỉ được lấy từ A3_STATE nếu đã chuẩn hóa rõ, trực tiếp, duy nhất và hợp lệ; O2 không được dùng legacy final field của A3, không được kéo narrative bệnh sử dài từ A3, không đọc raw user input để tự tạo ngày bệnh và không được tự suy đoán ngày bệnh nếu A3 không có dữ liệu rõ.
+    Mệnh đề “vào viện ngày thứ [số ngày bệnh] của bệnh” là optional clause. Nếu không có dữ kiện ngày bệnh, dữ kiện thời gian mơ hồ/ước lượng/dạng khoảng, chỉ có narrative nhưng không có số ngày bệnh rõ, exact duration nhưng chưa có counting convention, có ngày khởi phát/ngày vào viện nhưng chưa có counting convention, source no-data hoặc source không đủ chắc chắn thì O2 phải bỏ sạch toàn bộ mệnh đề ngày bệnh, không tạo lỗi, không NEEDS_FIX/BLOCKED, không thay đổi lý do vào viện, không thay đổi C4_FOR_O2 và vẫn render O2 nếu các nguồn bắt buộc khác hợp lệ.
+    O2 không được tự biến “đau 5 ngày”, “5 ngày trước vào viện”, hoặc “khởi phát 10/07, vào viện 13/07” thành “ngày thứ X của bệnh” khi chưa có counting convention rõ; không được chọn endpoint từ range như “5–7 ngày” hoặc “1–2 tuần”; không được chuẩn hóa từ ngữ mơ hồ/ước lượng như “vài ngày”, “mấy hôm”, “gần đây”, “khoảng một tuần” thành số ngày bệnh cụ thể.
+    O2 không được render placeholder/no-data literal trong day clause như “ngày thứ ... của bệnh”, “ngày thứ chưa xác định của bệnh”, “ngày thứ không rõ của bệnh”, “ngày thứ Chưa có dữ kiện của bệnh”, “[số ngày bệnh]” hoặc literal tương đương; khi day value unavailable phải clean omission, không thay bằng văn bản giải thích.
+    Nếu có tiền sử, chèn dưới dạng “tiền sử [A2_FINAL]”; nếu không có tiền sử thì bỏ cụm tiền sử và không để thừa dấu phẩy.
+    O2 không viết lại toàn bộ A2_FINAL/A1_REASON, không tự thêm dữ kiện từ A ngoài mapping, không tự thêm chẩn đoán/điều trị/thuốc/cận lâm sàng.
+    O2 có thể chỉnh chữ cái đầu của inserted A1/A2 nếu cần để câu liền mạch nhưng không được đổi nghĩa; phải giữ tên riêng, chữ viết tắt, thuật ngữ, mã bệnh và ký hiệu nếu nguồn có.
+    Opening phrase bắt buộc phải giữ cụm: “Qua thăm khám phát hiện các hội chứng và triệu chứng sau:”.
+
+O2_SPECIAL_RULES
+    Body sau câu mở đầu phải exact-preserve capitalization, wording, meaningful punctuation, nội dung lâm sàng, danh sách, thứ tự hội chứng/triệu chứng/cận lâm sàng và cấu trúc semantic từ canonical C4_STATE.C4_FOR_O2; O2 không được dùng O_PRESENTATION_NORMALIZATION để đổi ký tự body hoặc repair producer.
+    O2 không parse/derive/diễn giải, không thêm/bớt/sửa nội dung C4, không đổi thứ tự hoặc tên hội chứng/triệu chứng/cận lâm sàng, không đổi triệu chứng thành hội chứng, không đổi hội chứng thành chẩn đoán, không làm mượt hoặc chuẩn hóa y văn; với body C4_FOR_O2, mọi lỗi nội dung/source/text ngoài packaging code block/blank line phải BLOCKED/NEEDS_FIX và route về C4/source C4 tương ứng.
+    Nếu C4_FOR_O2 sai, thiếu, không render-ready hoặc chứa nội dung cấm, O2 phải BLOCKED/NEEDS_FIX, báo lỗi về C4/source và không tự sửa hộ C4.
+    O2 không fallback sang C4_ITEMS, C4_SYNDROME_SUMMARY, A_STATE body ngoài exact mapping, A12/A13/A15, A14_SUMMARY_FOR_O, C5_FOR_O2, C1 hoặc output cũ; nếu C4_STATE.C4_FOR_O2 thiếu/không hợp lệ thì không tự tổng hợp lại, không tự chọn hội chứng/triệu chứng/cận lâm sàng và không render bản hoàn chỉnh.
+    Khung thứ nhất không tự thêm cận lâm sàng ngoài C4_STATE.C4_FOR_O2. Khung thứ hai chỉ presentation-copy toàn bộ ba A14 result field eligible; không dùng C4_FOR_O2 làm source và không thay thế/sửa body khung thứ nhất.
+    Cross-block duplication là intentional: kết quả đã có trong C4_FOR_O2 vẫn render đầy đủ ở khung thứ hai nếu có trong A14 result field eligible; O2 không so sánh hai khung, không tạo seen-set, không cross-block deduplicate, không bỏ repeated A14 item, không yêu cầu C4 bỏ kết quả và không coi lặp giữa hai khung là lỗi. A14 vẫn là canonical result owner, C4 vẫn là owner association và O2 chỉ là presentation renderer.
+    Với khung thứ hai, O2 không select, abnormal-only filter, summarize, semantic deduplicate, merge, semantic-split, regroup, reorder trong field, interpret, sửa thuật ngữ, đổi/thêm/bớt trị số hoặc đơn vị, đổi modality/vị trí/bên/kết luận, chọn latest/highest/final hoặc group theo ngày.
+    O2 không biến chỉ định cần làm thành kết quả đã có, không lấy kết quả từ A14/A13/C1 hoặc source khác để thêm body khung thứ nhất; ngoại lệ duy nhất là deterministic-copy đúng A14_IMAGING_RESULT, A14_LABS_RESULT và A14_OTHER_PARACLINICAL_RESULT vào khung code thứ hai theo contract O2, không áp dụng cho A14_SUMMARY_FOR_O hoặc field khác. O2 không thêm dòng phủ định cận lâm sàng, không tạo block giả hội chứng, không thêm kết luận chẩn đoán, thuốc hoặc điều trị.
+    O2 không render metadata kỹ thuật như STATE_VERSION, ROUND_ID, RUN_MODE, REV, UPDATED_AT, A_CHECK/C_CHECK/O_CHECK, ERROR, CREATE/UPDATE/REUSE, A_MODULE_REV, O2_RENDER_CHECK hoặc O2_ERROR; O2_RENDER_CHECK và O2_ERROR nếu có chỉ dùng nội bộ.
+    PLAN_9/outside-record không làm O2 xuất formal, không tạo formal O2_OUTPUT, không tạo C4_STATE, không đọc C6/O12 để tạo formal O2 và không đưa nội dung ngoài bệnh án vào formal output.
+
+O2_CHECK_PASS_IF
+    PASS khi đồng thời:
+        1. O2 nằm trong render plan và đúng lượt.
+        2. A_GATE_STATUS = PASS và full current A_STATE hợp lệ.
+        3. C_GATE_STATUS = PASS.
+        4. C4_CHECK = PASS.
+        5. C4 nằm trong C_RUN_ORDER trước O2 nếu O2 formal output được yêu cầu.
+        6. C4_STATE.C4_FOR_O2 có mặt, hợp lệ, render-ready và defensive capitalization check PASS: ký tự chữ/nội dung đầu tiên sau exact prefix “- ”/“  + ”, sau “.” + khoảng trắng trong item nhiều câu hợp lệ, và sau “:” + khoảng trắng mở phần nội dung phải viết hoa khi applicable.
+        7. Câu mở đầu đúng mapping A, giữ lý do vào viện hợp lệ, giữ tuổi/giới/tiền sử khi có source hợp lệ, dùng đúng một trong hai format opening hợp lệ: “vào viện ngày thứ [số ngày bệnh] của bệnh vì [lý do vào viện]” khi có ngày bệnh rõ từ A3_STATE, hoặc “vào viện vì [lý do vào viện]” khi day clause unavailable optional; giữ đúng opening phrase bắt buộc “Qua thăm khám phát hiện các hội chứng và triệu chứng sau:”.
+        8. Khung thứ nhất nằm trong một text code block, heading đúng literal “TÓM TẮT BỆNH ÁN”, không có blank line giữa heading/opening/body và giữ nguyên toàn bộ current first-block contract.
+        9. Body sau opening exact-preserve capitalization, wording, meaningful punctuation, nội dung lâm sàng, danh sách, thứ tự và cấu trúc semantic từ C4_STATE.C4_FOR_O2; không có nội dung ngoài C4_FOR_O2 trong body và không textual-normalize/repair producer payload.
+        10. Không dùng nguồn ngoài allowlist, không đọc/fallback C4_ITEMS, không dùng A12/A13/A15/A14_SUMMARY_FOR_O/C1/C5 để thêm body; chỉ dùng ba A14 result field cho khung thứ hai.
+        11. Không parse/derive/diễn giải/thêm/bớt/sửa nội dung, capitalization, meaningful punctuation hoặc sắp xếp lại C4_FOR_O2; chỉ packaging code block/blank line không đổi ký tự payload được phép và không render metadata/check/error.
+        12. Không tự suy đoán/tự tính số ngày bệnh, không tính từ duration/date khi chưa có counting convention, không chọn endpoint từ range, không biến approximate/vague duration thành số cụ thể, không render placeholder/no-data literal trong câu mở đầu và không tạo câu khuyết/dấu câu sai khi bỏ day clause.
+        13. O2_RENDER_CHECK = PASS nếu hệ thống dùng check.
+        14. Ba A14 result field có mặt/hợp lệ và exact no-data mapping đúng: cả ba no-data thì output có đúng một text code block; có ít nhất một nội dung thật thì output có đúng hai text code block label `text`, cách nhau đúng một physical blank line, không `---`/prose ngoài block.
+        15. Khi có khung thứ hai: first line exact `Cận lâm sàng:`, field order imaging → labs → other, labs/other đúng label, imaging không wrapper, không bullet/numbering/`Điều trị:`/empty label/no-data leak và toàn bộ eligible content được giữ nguyên theo O_PRESENTATION_NORMALIZATION.
+        16. Intentional cross-block duplication và repeated A14 item được giữ; không compare/deduplicate giữa hai khung, không semantic transform và không dùng forbidden source cho khung thứ hai.
+
+O2_NEEDS_FIX_IF
+    SKIP, không phải NEEDS_FIX, khi O2 không nằm trong render plan hoặc chưa đến lượt.
+    NEEDS_FIX/BLOCKED khi A_GATE_STATUS thiếu/khác PASS, full current A_STATE thiếu/không hợp lệ, C_GATE_STATUS thiếu/khác PASS, C4_CHECK thiếu/không PASS, C4 chưa được đưa vào C_RUN_ORDER trước O2 khi O2 formal output được yêu cầu, thiếu C4_STATE.C4_FOR_O2, C4_FOR_O2 không render-ready/sai format/vi phạm producer-owned capitalization sau prefix “- ”/“  + ” hoặc sau “.”/“:”/chứa “Không áp dụng.” nếu contract cấm/chứa dòng phủ định cận lâm sàng bị cấm/chứa block giả hội chứng, thiếu required source khác của câu mở đầu như lý do vào viện theo contract hiện hành, output sai code block/heading/opening phrase/blank line, output vẫn dùng opening phrase cũ, body không exact-preserve capitalization/meaningful punctuation/nội dung lâm sàng/thứ tự semantic C4_FOR_O2, O2 tự suy đoán số ngày bệnh hoặc kéo narrative bệnh sử dài từ A3, O2 tự tính ngày bệnh từ duration/date khi chưa có counting convention, O2 chọn tùy ý endpoint từ range, O2 biến approximate/vague duration thành số cụ thể, O2 render placeholder/no-data literal trong day clause, O2 tạo câu khuyết hoặc dấu câu sai khi bỏ day clause, O2 bỏ mất lý do vào viện chỉ vì không có ngày bệnh, O2 vẫn coi thiếu optional day là missing required source, O2 tự thêm/bớt/sửa/sắp xếp body, fallback sang C4_ITEMS hoặc A_STATE ngoài exact mapping, dùng nguồn cấm, render metadata/check/error, hoặc tự sửa/che lỗi C4. Nếu C4_CHECK=PASS nhưng capitalization defensive check fail thì đây là C4 false-PASS: O2 không capitalize, không render full/partial, ghi nhóm lỗi C4_STATE.C4_FOR_O2/ERR-C4-FOR-O2-CAPITALIZATION và route C4/source C4.
+    NEEDS_FIX/BLOCKED khi bất kỳ A14_IMAGING_RESULT/A14_LABS_RESULT/A14_OTHER_PARACLINICAL_RESULT missing, null, blank, whitespace-only, malformed, noncanonical sentinel hoặc không render-ready; A14_CHECK/A_GATE_STATUS không PASS; block count/fence label/separator sai; khung thứ hai xuất hiện khi cả ba no-data, thiếu khi có content, xuất độc lập, gộp với khung thứ nhất, empty hoặc có wrong heading/order/label/imaging wrapper/bullet/numbering/`Điều trị:`/`---`/prose ngoài block/no-data leak/empty group.
+    NEEDS_FIX/BLOCKED khi khung thứ hai làm mất/thêm/đổi thứ tự content, filter normal/abnormal, select/summarize/deduplicate/merge/split/regroup/group theo ngày, chọn latest/highest/final, đổi trị số/đơn vị/modality/vị trí/bên/kết luận, loại intentional cross-block duplicate/repeated A14 item, dùng A14_SUMMARY_FOR_O/A13/A15/raw input/output cũ/C4_FOR_O2/hidden memory/web làm source, hoặc source invalid nhưng vẫn render complete/partial O2.
+    Không NEEDS_FIX/BLOCKED chỉ vì không có ngày bệnh, thời gian khởi phát không rõ, dữ kiện chỉ mang tính ước lượng, dữ kiện là range, exact duration chưa có counting convention, exact onset/admission dates chưa có counting convention, source no-data hợp lệ cho ngày bệnh hoặc A3_STATE không cung cấp được giá trị ngày bệnh trực tiếp/rõ/duy nhất. Thiếu lý do vào viện vẫn xử lý theo rule bắt buộc hiện hành và không được quy thành lỗi thiếu ngày bệnh.
+    Nếu source hiện hành cung cấp nhiều ngày bệnh trực tiếp khác nhau và A3_CHECK = NEEDS_FIX hoặc A_GATE_STATUS = NEEDS_FIX, O2 không được tự chọn một giá trị, không clean omission để che conflict và phải tôn trọng source/gate fail; O2 không thêm logic conflict vào gate.
+
+O2_ERROR_RULE
+    Khi NEEDS_FIX/BLOCKED, O2_ERROR phải ghi rõ lỗi cụ thể và chỉ rõ nhóm lỗi: G render plan/order, A_GATE/A_STATE, C_GATE_STATUS, C4_CHECK, C4_STATE.C4_FOR_O2 (gồm ERR-C4-FOR-O2-CAPITALIZATION khi defensive check phát hiện false-PASS), A14_STATE.A14_IMAGING_RESULT, A14_STATE.A14_LABS_RESULT, A14_STATE.A14_OTHER_PARACLINICAL_RESULT, opening sentence, first/second-block render schema, no-data mapping, semantic source-preserve, forbidden source, metadata hoặc outside-record.
+    Nếu lỗi do O2 render placeholder/no-data literal trong day clause, O2_ERROR dùng hoặc nêu rõ `ERR-O2-DAY-CLAUSE-PLACEHOLDER-LEAK`; không tạo error chỉ vì day value unavailable optional.
+    Nếu lỗi do C4_FOR_O2, route rõ về C4/source C4.
+    Nếu lỗi do ba A14 result field/no-data mapping thì route rõ về exact A14 field/A14/A_GATE; O2 không tự sửa, trim hoặc hợp thức hóa A14. Nếu lỗi fence/count/heading/order/label khung thứ hai thì route về O2 render schema; forbidden-source error phải nêu exact source.
+    Khi lỗi, O2 không render hoàn chỉnh hoặc partial “TÓM TẮT BỆNH ÁN”/khung cận lâm sàng, không tự sửa C4/A14 và không tự fill bằng nguồn cấm.
+    Khi PASS, O2_RENDER_CHECK = PASS nếu hệ thống dùng; không render check/error metadata trong bệnh án thường quy.
+
+O2_REUSE_RULE
+    Contract O2 không định nghĩa lifecycle CREATE/UPDATE/REUSE riêng.
+    O2 không đọc/reuse old O2_OUTPUT; khi G plan O2, O2 render lại từ current allowed sources.
+    Old output không phải source và không dùng rendered output cũ để dựng O2 mới.
+
+O2_END
+    Sau O2, hệ thống render O tiếp theo theo G_STATE.O_RENDER_ORDER.
+    O2 không tự chạy O3, không gọi A/C, không sửa state và không sửa O khác.
+
+<<< END O2
+####################################################################################################
+
+O3 — TỔNG KẾT BỆNH ÁN / RA VIỆN
+Version: BA S-G-A-C-O V4
+Update: 22/07/2026 GMT+7 — phần 2 render kết quả cận lâm sàng đã có từ A14; giữ strict-consumer C7 cho end-line/condition
+
+O3_ROLE
+    O3 là strict renderer/output selective cho `TỔNG KẾT BỆNH ÁN / RA VIỆN`.
+    O3 chỉ render 3 phần: quá trình và diễn biến lâm sàng, phương pháp điều trị, tình trạng ra viện.
+    O3 chỉ dùng dữ liệu đã chốt hợp lệ từ A/C theo mapping O3_ALLOWED_SOURCE; không tạo dữ liệu lâm sàng mới, không suy luận dữ liệu thiếu và không sửa source.
+    O3 không sửa G_STATE/A_STATE/C_STATE/C7_STATE, không tự chạy A/C/C7, không tự gọi O khác, không render O khác, không biến thành O4 bệnh trình, O8 bệnh án chi tiết, đơn thuốc, tư vấn ra viện, dặn dò, tái khám hoặc footer hành chính.
+    O3_OUTPUT nếu có là rendered text, không phải state, không là source cho A/C/O khác và không có revision metadata riêng.
+    O3 không có O3_STATE, O3_REV, O3_FINAL, O3_SOURCE_REV hoặc lifecycle state riêng.
+
+O3_ALLOWED_SOURCE
+    O3 chỉ được đọc các nguồn sau:
+        1. G_STATE của ROUND hiện tại:
+            - Chỉ đọc O_RENDER_LIST, O_RENDER_ORDER, thứ tự render ROUND hiện tại và C_RUN_ORDER để xác nhận C7 đã chạy trước O3 khi O3 formal output được yêu cầu.
+            - Không dùng G_STATE làm dữ kiện bệnh án.
+        2. A_GATE mới nhất:
+            - Chỉ kiểm A_GATE_STATUS = PASS và full current A_STATE hợp lệ.
+        3. Full current A_STATE sau A_GATE_STATUS = PASS, chỉ các field phục vụ O3:
+            - A1_STATE.A1_TIME hoặc field ngày nhập viện tương đương đã chuẩn hóa.
+            - A1_STATE.A1_REASON.
+            - A2_STATE.A2_FINAL hoặc field tiền sử tương đương đã chuẩn hóa nếu có.
+            - A3_STATE.A3_FOR_O8 và dữ kiện A3 chuẩn hóa về thời gian trước vào viện, diễn biến bệnh sử, xử trí trước vào viện/tại nhà và khoa điều trị nếu có.
+            - A14_STATE.A14_SEX: chỉ dùng cho phần mở đầu dòng 1 khi field hợp lệ, không phải no-data và A_GATE/source check hợp lệ.
+            - A14_STATE.A14_AGE: chỉ dùng cho phần mở đầu dòng 1 khi field hợp lệ, không phải no-data và A_GATE/source check hợp lệ.
+            - A12_STATE.A12_FINAL.
+            - A13_STATE.A13_TREATMENT.
+            - A14_STATE.A14_LABS_RESULT: chỉ dùng trong phần 2 khi là kết quả đã có, khác no-data và render-ready.
+            - A14_STATE.A14_IMAGING_RESULT: chỉ dùng trong phần 2 khi là kết quả đã có, khác no-data và render-ready.
+            - A14_STATE.A14_OTHER_PARACLINICAL_RESULT: chỉ dùng trong phần 2 khi là kết quả đã có, khác no-data và render-ready.
+        4. C_GATE mới nhất:
+            - Chỉ kiểm C_GATE_STATUS = PASS và C7_STATE hợp lệ khi O3 render phần tình trạng ra viện.
+        5. C7_STATE, chỉ các field:
+            - C7_CHECK.
+            - C7_STATE.C7_DISCHARGE_CONDITION.
+            - C7_STATE.C7_TREATMENT_END_LINE.
+    C7_STATE.C7_DISCHARGE_CONDITION là nguồn duy nhất cho phần 3 `Tình trạng ra viện`.
+    O3 chỉ được dùng A14_STATE.A14_SEX và A14_STATE.A14_AGE cho cụm hành chính mở đầu dòng 1; ba field A14 result đã allowlist chỉ dùng trong phần 2; không mở rộng sang A14 field khác, không đọc toàn bộ A14 và không dùng A14 để tạo bệnh sử, tiền sử, chẩn đoán, xử trí, tình trạng ra viện hoặc khoa điều trị.
+    O3 không được đọc/dùng raw user input, hidden memory/trí nhớ ẩn, output cũ, O3_OUTPUT cũ, rendered output cũ, patch/delta, A_STATE ngoài mapping O3, C_STATE ngoài mapping O3, O1/O2 output, O4_OUTPUT, O4 rendered bệnh trình cũ, O5-O13 output, A14_SUMMARY_FOR_O, A14 hoặc bệnh trình ngày ra viện trong A14 để tạo tình trạng ra viện phần 3, A13_LABS, A13_IMAGING, A15_STATE, O6 đơn thuốc, C1-C6 mặc định, web/guideline/source ngoài hoặc metadata kỹ thuật để render nội dung.
+
+O3_ALLOWED_ACTION
+    O3 RUN/render khi đồng thời:
+        1. O3 nằm trong G_STATE.O_RENDER_LIST hoặc G_STATE.O_RENDER_ORDER.
+        2. Đã đến lượt theo G_STATE.O_RENDER_ORDER.
+        3. A_GATE_STATUS = PASS và full current A_STATE hợp lệ.
+        4. C_GATE_STATUS = PASS khi O3 cần render phần 3 từ C7.
+        5. C7_CHECK = PASS.
+        6. C7 đã được G đưa vào C_RUN_ORDER trước O3 khi O3 formal output được yêu cầu.
+        7. C7_STATE.C7_DISCHARGE_CONDITION có mặt, hợp lệ và render-ready.
+        8. Nguồn bắt buộc cho phần 1/2 từ A mapping có mặt và hợp lệ; A13_TREATMENT có mặt cho dòng điều trị; mỗi A14_LABS_RESULT/A14_IMAGING_RESULT/A14_OTHER_PARACLINICAL_RESULT chỉ render khi khác no-data, có mặt và render-ready. Nếu cả ba là no-data hợp lệ thì phần 2 chỉ render dòng điều trị.
+        9. C7_STATE.C7_TREATMENT_END_LINE có mặt, khác NONE và render-ready cho dòng 4.
+    O3 SKIP im lặng khi không nằm trong render plan hoặc chưa đến lượt: không output, không tạo/cập nhật O3_OUTPUT và không in `O3_OUTPUT = SKIP`.
+    O3 BLOCKED/NEEDS_FIX khi thiếu nguồn bắt buộc, gate/check không PASS, thiếu/sai C7_DISCHARGE_CONDITION hoặc C7_TREATMENT_END_LINE, C7_CHECK không PASS, C7_TREATMENT_END_LINE = NONE hoặc không render-ready cho dòng 4, thiếu A12/A13 nguồn bắt buộc, A14 result khác no-data nhưng thiếu/không render-ready, output không thể đạt schema nếu không tự bịa/sửa nguồn hoặc cần sửa source A/C trước mới render đúng.
+    O3 không tự sửa C7, tự chạy C7, tự sửa A, tự chạy A, tự sửa G, tự render O khác, tự thay O1/O2/O4-O13, tự tạo dữ liệu bệnh án, tự bù dữ liệu thiếu hoặc dùng output cũ để render lại.
+
+O3_ALLOWED_WRITE
+    O3 chỉ được ghi/render O3_OUTPUT hoặc rendered text nếu contract dùng field này.
+    O3 có thể dùng nội bộ O3_RENDER_CHECK và O3_ERROR nếu hệ thống dùng check, nhưng không render metadata check/error vào bệnh án thường quy.
+    O3 không ghi O3_STATE, O3_FINAL, O3_REV, G_STATE, A_STATE, C_STATE, C7_STATE, O1, O2, O4-O13, A1-A15 hoặc C1-C7.
+
+O3_RENDER_SCHEMA
+    O3 output thật phải có đúng cấu trúc sau:
+
+    TỔNG KẾT BỆNH ÁN / RA VIỆN
+
+    1. Quá trình và diễn biến lâm sàng:
+    ```text
+    [Dòng 1: một câu bệnh sử hoàn chỉnh theo template A14 tuổi/giới nếu có + A2 tiền sử + A3 bệnh sử trước vào viện, A1 chỉ bổ trợ/đối chiếu]
+    Được chẩn đoán: [A12_STATE.A12_FINAL].
+    Được xử trí: [A13_STATE.A13_TREATMENT].
+    [Dòng 4: exact-copy C7_STATE.C7_TREATMENT_END_LINE]
+    ```
+
+    2. Phương pháp điều trị:
+    ```text
+    Điều trị: [A13_STATE.A13_TREATMENT].
+    [Nếu có ít nhất một A14 result render-ready:]
+    Cận lâm sàng:
+    [GIỮ NGUYÊN CÁC DÒNG/ITEM A14_STATE.A14_IMAGING_RESULT nếu khác no-data và render-ready]
+    [Xét nghiệm: A14_STATE.A14_LABS_RESULT nếu khác no-data và render-ready]
+    [Cận lâm sàng khác: A14_STATE.A14_OTHER_PARACLINICAL_RESULT nếu khác no-data và render-ready]
+    ```
+
+    3. Tình trạng ra viện:
+    ```text
+    [GIỮ NGUYÊN NỘI DUNG LÂM SÀNG C7_STATE.C7_DISCHARGE_CONDITION + ÁP DỤNG O_PRESENTATION_NORMALIZATION]
+    ```
+
+    Bắt buộc:
+        1. Tiêu đề chính nằm ngoài text code block và đúng literal `TỔNG KẾT BỆNH ÁN / RA VIỆN`.
+        2. Ba tiêu đề phần nằm ngoài text code block và đúng literal: `1. Quá trình và diễn biến lâm sàng:`, `2. Phương pháp điều trị:`, `3. Tình trạng ra viện:`.
+        3. Có đúng 3 phần và đúng 3 text code block riêng.
+        4. Text code block phần 1 có đúng 4 dòng; text code block phần 2 có dòng đầu đúng `Điều trị: [A13_STATE.A13_TREATMENT].` và chỉ khi có ít nhất một A14 result render-ready mới thêm dòng `Cận lâm sàng:` cùng các dòng source tương ứng không có dấu gạch đầu dòng; text code block phần 3 giữ nguyên nội dung lâm sàng, thứ tự dòng và ý nghĩa từ C7_STATE.C7_DISCHARGE_CONDITION, chỉ áp dụng O_PRESENTATION_NORMALIZATION khi render trình bày.
+        5. Không có phần thứ 4, không có heading bắt đầu bằng `4.`, không có mục `Ngày ra viện`, `Tư vấn ra viện`, `Đơn thuốc`, `Dặn dò`, `Tái khám`, `RA VIỆN`, `Chủ nhiệm khoa` và không render metadata kỹ thuật.
+
+O3_LOGIC_RULES
+    Dòng 1 phần 1 là một dòng và một câu bệnh sử hoàn chỉnh, không dùng dấu `;`, không đưa chẩn đoán, xử trí trong viện, bệnh trình từng ngày hoặc quyết định ra viện vào dòng 1. Template định hướng: `Bệnh nhân [giới/tuổi nếu có], tiền sử [A2 nếu hợp lệ], cách vào viện [thời gian nếu có] xuất hiện [triệu chứng chính và vị trí], [diễn biến/tính chất/mức độ/yếu tố tăng giảm/triệu chứng kèm nếu có], đã [xử trí trước viện nếu có] [liên kết với đáp ứng nếu có], nên vào viện hoặc vào khoa [tên khoa nếu có] khám và điều trị.` Template này chỉ là cấu trúc render từ source, không hard-code tuổi, giới, bệnh, vị trí, thời gian, thuốc, khoa hoặc ngày.
+    Source priority dòng 1: A3_STATE.A3_FOR_O8 và dữ kiện A3 chuẩn hóa hợp lệ là nguồn lâm sàng chính; A2_STATE.A2_FINAL là nguồn tiền sử; A14_STATE.A14_SEX và A14_STATE.A14_AGE là nguồn hành chính đầu câu nếu hợp lệ và không phải no-data; A1_STATE.A1_REASON chỉ là nguồn bổ trợ/đối chiếu triệu chứng hoặc lý do vào viện, không được thay A3_FOR_O8, không được làm nguồn duy nhất của bệnh sử khi A3_FOR_O8 tồn tại, không được làm dòng 1 rút thành cụm `vào viện vì...` ngắn và không được làm mất thời gian, diễn biến, xử trí hoặc đáp ứng đã có trong A3.
+    Render tuổi/giới dòng 1: nếu có cả giới và tuổi thì viết `Bệnh nhân [giới] [tuổi]`; nếu chỉ có giới thì viết `Bệnh nhân [giới]`; nếu chỉ có tuổi thì viết `Bệnh nhân [tuổi]`; nếu cả hai thiếu hoặc no-data thì mở đầu sạch bằng `Bệnh nhân` và không để placeholder, không bịa tuổi/giới, không dùng raw input ngoài state để lấp.
+    Render tiền sử dòng 1: dùng A2_FINAL nếu hợp lệ; được presentation-normalize chữ hoa/chữ thường đầu câu, dấu chấm cuối field và khoảng trắng để ghép câu, ví dụ `Chưa phát hiện bệnh lý mạn tính.` thành `tiền sử chưa phát hiện bệnh lý mạn tính`, nhưng không đổi nghĩa, không bỏ dữ kiện tiền sử và không thêm tiền sử mới; nếu A2 bắt buộc nhưng thiếu/invalid thì BLOCKED/NEEDS_FIX.
+    Render bệnh sử A3 dòng 1: lấy triệu chứng chính/vị trí, thời gian trước vào viện, kiểu khởi phát, diễn biến trước viện, tính chất, mức độ, yếu tố tăng/giảm, triệu chứng kèm, yếu tố chấn thương, nơi xử trí, xử trí trước viện/tại nhà, đáp ứng và khoa điều trị từ A3_FOR_O8/dữ kiện A3 chuẩn hóa nếu có. Không bắt buộc thêm thành phần optional khi source không có; nếu thiếu thời gian thì bỏ mệnh đề thời gian sạch và không tạo con số mặc định; nếu có xử trí nhưng không có đáp ứng thì chỉ ghi xử trí, không tự thêm `không giảm`, `đỡ ít`, `không đáp ứng`; nếu có đáp ứng nhưng không xác định được xử trí thì chỉ render khi câu vẫn rõ và nguồn hợp lệ, nếu không tạo được câu sạch thì BLOCKED/NEEDS_FIX.
+    Câu kết dòng 1: nếu A3 có khoa rõ thì dùng `nên vào khoa [tên khoa] khám và điều trị.`; nếu không có khoa nhưng có dữ kiện vào viện thì dùng `nên vào viện khám và điều trị.`; không hard-code khoa Cơ xương khớp, Nội tiết hoặc khoa khác nếu source ca hiện tại không có; không dùng khoa từ hidden memory, output cũ hoặc nguồn ngoài allowlist.
+    SOURCE COVERAGE dòng 1: dòng 1 không đủ chỉ vì tồn tại, là một dòng, không có dấu `;`, chứa A1_REASON hoặc có tuổi/giới. Nếu source hợp lệ có dữ kiện, dòng 1 phải giữ tuổi/giới từ A14 nếu có, tiền sử từ A2 nếu có, thời gian trước viện từ A3 nếu có, triệu chứng chính và vị trí, diễn biến/tính chất/mức độ/triệu chứng kèm có ý nghĩa nếu có, xử trí trước viện nếu có, đáp ứng nếu có và câu kết vào viện/khoa nếu source có. Độ đầy đủ được xác định bằng SOURCE COVERAGE, không bằng số ký tự; được loại bỏ dữ kiện lặp y hệt giữa A1 và A3, câu kết lặp, dấu chấm/viết hoa không phù hợp khi ghép, nhưng không được loại bỏ ý nghĩa lâm sàng riêng biệt.
+    Dòng 1 không dùng raw user input ngoài A_STATE, không dùng O1/O8 output đã render, O_OUTPUT, hidden memory/trí nhớ ẩn, C7_FOR_O4, bệnh trình từng ngày hoặc nguồn ngoài allowlist; nếu thiếu nguồn cần thiết để tạo dòng 1 sạch thì BLOCKED/NEEDS_FIX, không bịa.
+    Dòng 2 phần 1 bắt buộc là `Được chẩn đoán: [A12_STATE.A12_FINAL].`; O3 không tự thêm/sửa/rút gọn/chuyển nghĩa A12, không dùng C5/C4/raw input thay A12; nếu A12 thiếu hoặc chưa đúng thì BLOCKED/NEEDS_FIX và route về A12.
+    Dòng 3 phần 1 bắt buộc là `Được xử trí: [A13_STATE.A13_TREATMENT].`; O3 không dùng A13_LABS, A13_IMAGING, A14 kết quả, A15 thuốc/đơn thuốc, không tự thêm thuốc cụ thể hoặc viết phác đồ dài nếu A13_TREATMENT chỉ là hướng điều trị ngắn; nếu A13_TREATMENT thiếu hoặc chưa đúng thì BLOCKED/NEEDS_FIX và route về A13.
+    Dòng 4 phần 1 phải exact-copy từng ký tự C7_STATE.C7_TREATMENT_END_LINE; O3 không tự chọn template, không tự ghép ngày/tên bệnh viện, không tự xác định loại kết thúc, không đọc C7_FOR_O4 để parse câu và không thêm “Chủ nhiệm khoa.”.
+    O3 không dùng A14_DISCHARGE_DATE, field loại kết thúc/bệnh viện nhận từ A14 hoặc C7_DISCHARGE_DATE_USED để tạo dòng 4; nếu field thiếu/NONE/sai/stale thì route về C7.
+    Phần 2 có đúng 1 text code block; dòng đầu đúng `Điều trị: [A13_STATE.A13_TREATMENT].`. Khi ít nhất một trong A14_LABS_RESULT, A14_IMAGING_RESULT, A14_OTHER_PARACLINICAL_RESULT khác no-data và render-ready, dòng kế tiếp đúng `Cận lâm sàng:`. A14_LABS_RESULT render dưới nhãn `Xét nghiệm:` và A14_OTHER_PARACLINICAL_RESULT render dưới nhãn `Cận lâm sàng khác:`; A14_IMAGING_RESULT render nguyên các dòng/item ngay dưới heading, không thêm nhãn wrapper chung. Với A14_IMAGING_RESULT, O3 giữ nguyên toàn bộ nội dung, modality, số lượng dòng/item, thứ tự, dấu câu, trị số, đơn vị và modality lặp lại; không nhận diện/đoán/đổi tên/dịch/chuẩn hóa lại modality, không chuyển item sang nhãn khác, không gộp/tách/sắp xếp lại/deduplicate/bỏ/thêm dòng hoặc item. Không dùng dấu gạch đầu dòng trước các dòng cận lâm sàng. Không có A14 result render-ready thì phần 2 chỉ có dòng điều trị. O3 không lọc bình thường/bất thường, không diễn giải, không sửa trị số/đơn vị, không quy đổi hoặc bỏ item hợp lệ; chỉ áp dụng O_PRESENTATION_NORMALIZATION. Không dùng A13_LABS/A13_IMAGING, A14_SUMMARY_FOR_O, raw user input, output cũ hoặc A15 đơn thuốc; không tự thêm thuốc cụ thể hoặc phác đồ dài nếu A13_TREATMENT ngắn.
+    O3 chỉ render từ current allowed state khi G plan, không đọc/reuse old O3_OUTPUT, không dùng output đã render làm nguồn, không tự suy luận dữ liệu thiếu, không sửa source A/C; nếu C7_TREATMENT_END_LINE thiếu/NONE/sai/stale thì route về C7; nếu source C7 sai thì route về C7; nếu O3 không nằm trong render plan hoặc chưa đến lượt thì SKIP im lặng, không NEEDS_FIX.
+
+O3_SPECIAL_RULES
+    O3 requires C7 khi render tổng kết ra viện; G phải đưa C7 vào C_RUN_ORDER trước O3 khi O3 formal output được yêu cầu.
+    Phần 3 có đúng 1 text code block và lấy duy nhất từ C7_STATE.C7_DISCHARGE_CONDITION.
+    Phần 3 phải giữ nguyên nội dung lâm sàng, thứ tự dòng và ý nghĩa từ C7_STATE.C7_DISCHARGE_CONDITION; O3 chỉ được áp dụng O_PRESENTATION_NORMALIZATION khi render trình bày. O3 không thêm/bỏ/đổi thứ tự nội dung, không sửa câu chữ theo nghĩa, không làm mượt, không chuẩn hóa y văn, không tự chuyển đoạn văn thành gạch đầu dòng hoặc tách C7_DISCHARGE_CONDITION thành dòng 1/dòng 2/dòng 3.
+    O3 không đếm số dòng của C7_DISCHARGE_CONDITION và không quy định phần 3 phải có đúng 5 dòng; format/bullet của C7_DISCHARGE_CONDITION thuộc trách nhiệm C7 trước PASS.
+    Nếu C7_DISCHARGE_CONDITION thiếu, sai, không render-ready hoặc C7_CHECK != PASS thì O3 phải BLOCKED/NEEDS_FIX, route về C7/source C7, không tự sửa ở O3 và không render bản O3 hoàn chỉnh.
+    O3 không dùng A14 làm tình trạng ra viện phần 3, không dùng bệnh trình từng ngày để viết tổng kết, không dùng O4_OUTPUT hoặc rendered bệnh trình cũ, không dùng A15 đơn thuốc, không dùng A13_LABS/A13_IMAGING làm kết quả đã có hoặc điều trị, không dùng A14_SUMMARY_FOR_O và không thêm mục đơn thuốc/tư vấn/dặn dò/tái khám.
+    O3 không render metadata kỹ thuật gồm STATE_VERSION, ROUND_ID, RUN_MODE, REV, UPDATED_AT, A_CHECK/C_CHECK/O_CHECK, ERROR, CREATE/UPDATE/REUSE, A_MODULE_REV, C_MODULE_REV, O_RENDER_LIST/O_RENDER_ORDER, O3_RENDER_CHECK hoặc O3_ERROR.
+
+O3_CHECK_PASS_IF
+    O3_RENDER_CHECK = PASS nếu hệ thống dùng check và tất cả điều kiện sau đúng:
+        1. O3 nằm trong render plan, đúng lượt, A_GATE_STATUS = PASS, full current A_STATE hợp lệ, C_GATE_STATUS = PASS khi cần C7, C7_CHECK = PASS và C7 nằm trong C_RUN_ORDER trước O3 khi O3 formal output được yêu cầu.
+        2. C7_STATE.C7_DISCHARGE_CONDITION và C7_STATE.C7_TREATMENT_END_LINE có mặt và render-ready; field khác NONE.
+        3. Tiêu đề chính đúng literal `TỔNG KẾT BỆNH ÁN / RA VIỆN`.
+        4. Có đúng 3 phần, đúng 3 text code block riêng, tiêu đề các phần đúng literal và nằm ngoài text code block.
+        5. Text code block phần 1 có đúng 4 dòng; dòng 1 là đúng một dòng và một câu hoàn chỉnh, không có dấu `;`, dùng đúng source allowlist, lấy A3_FOR_O8/dữ kiện A3 làm nguồn bệnh sử chính, không dùng A1_REASON thay bệnh sử A3, render tuổi/giới từ A14 nếu source hợp lệ và có dữ kiện, giữ A2 nếu source hợp lệ, giữ các dữ kiện A3 có ý nghĩa/xử trí/đáp ứng/câu kết vào viện-khoa nếu source có, bỏ mệnh đề optional sạch khi source thiếu, không tự thêm dữ kiện, không đưa chẩn đoán, xử trí trong viện, bệnh trình từng ngày hoặc quyết định ra viện vào dòng 1; dòng 2 bắt đầu đúng `Được chẩn đoán:`; dòng 3 bắt đầu đúng `Được xử trí:`; dòng 4 exact-copy từng ký tự C7_STATE.C7_TREATMENT_END_LINE, không có “Chủ nhiệm khoa.”.
+        6. Text code block phần 2 có đúng một dòng đầu bắt đầu `Điều trị:`; nếu cả ba A14 result là no-data hợp lệ thì không có dòng cận lâm sàng; nếu có A14 result render-ready thì có đúng dòng `Cận lâm sàng:`, A14_LABS_RESULT/A14_OTHER_PARACLINICAL_RESULT dùng đúng nhãn tương ứng, còn A14_IMAGING_RESULT giữ nguyên toàn bộ dòng/item, modality, số lượng và thứ tự từ source, không có wrapper `Chẩn đoán hình ảnh/thăm dò:`, không có nhãn modality do O3 tự tạo và không có dấu gạch đầu dòng; chỉ áp dụng O_PRESENTATION_NORMALIZATION.
+        7. Text code block phần 3 giữ nguyên nội dung lâm sàng, thứ tự dòng và ý nghĩa từ C7_STATE.C7_DISCHARGE_CONDITION, chỉ áp dụng O_PRESENTATION_NORMALIZATION khi render trình bày.
+        8. Không có phần thứ 4, không có heading bắt đầu bằng `4.`, không có mục cấm: Ngày ra viện, Tư vấn, Đơn thuốc, Dặn dò, Tái khám, RA VIỆN, Chủ nhiệm khoa.
+        9. Không dùng nguồn ngoài allowlist, không dùng A14 làm tình trạng ra viện, không dùng bệnh trình từng ngày/O4 output, không render metadata/check/error.
+
+O3_NEEDS_FIX_IF
+    SKIP, không phải NEEDS_FIX, khi O3 không nằm trong render plan hoặc chưa đến lượt.
+    O3_RENDER_CHECK = NEEDS_FIX/BLOCKED khi có bất kỳ lỗi sau:
+        1. A_GATE_STATUS thiếu hoặc khác PASS; full current A_STATE thiếu/không hợp lệ.
+        2. C_GATE_STATUS thiếu hoặc khác PASS khi cần C7; C7_CHECK thiếu hoặc không PASS; C7 chưa được đưa vào C_RUN_ORDER trước O3 khi O3 formal output được yêu cầu.
+        3. Thiếu C7_STATE.C7_DISCHARGE_CONDITION hoặc C7_DISCHARGE_CONDITION không render-ready.
+        4. Thiếu A12_FINAL cho dòng chẩn đoán, thiếu A13_TREATMENT cho dòng xử trí/điều trị, C7_TREATMENT_END_LINE thiếu/NONE/không render-ready cho dòng 4, dòng 4 không exact-copy source hoặc O3 tự thêm nội dung vào dòng 4; A14 result khác no-data nhưng thiếu/không render-ready cho phần 2.
+        5. Output sai tiêu đề chính, sai số phần, sai số text code block, text code block phần 1 không đúng 4 dòng, dòng 1 dùng dấu `;`, sai mapping, nhiều câu/đoạn dài, chỉ lấy A1_REASON dù A3_FOR_O8 có bệnh sử, bỏ dữ kiện A3 có ý nghĩa, bỏ xử trí/đáp ứng có source, dùng tuổi/giới không có source hợp lệ, dùng nguồn ngoài allowlist, tự bịa thời gian/khoa/đáp ứng/triệu chứng/tiền sử, quá ngắn do bỏ dữ kiện source, không thể tạo câu sạch từ source hợp lệ, dòng 2/3 sai prefix, text code block phần 2 thiếu dòng điều trị đầu tiên, có dòng cận lâm sàng khi cả ba A14 result no-data, thiếu source A14 result render-ready, dùng wrapper `Chẩn đoán hình ảnh/thăm dò:` thay dòng/item imaging source, đổi/đoán modality, chuyển imaging sang nhãn khác, gộp/tách/sắp xếp lại/deduplicate/bỏ/thêm dòng hoặc item imaging, dùng sai nhãn hoặc dấu gạch đầu dòng, tự lọc/diễn giải/sửa trị số hoặc đơn vị kết quả, hoặc text code block phần 3 không giữ nguyên nội dung lâm sàng/thứ tự dòng/ý nghĩa từ C7.
+        6. O3 tự thêm/bớt/sửa nội dung hoặc sắp xếp lại C7_DISCHARGE_CONDITION ngoài O_PRESENTATION_NORMALIZATION, dùng A14 làm tình trạng ra viện hoặc dùng A14 ngoài A14_AGE/A14_SEX cho mở đầu dòng 1 hay ngoài ba A14 result allowlist cho phần 2, dùng A14/C7_DISCHARGE_DATE_USED/C7_FOR_O4 để tạo dòng 4, dùng bệnh trình từng ngày/O4 output/output cũ, dùng A13_LABS/A13_IMAGING làm kết quả đã có hoặc điều trị, dùng A14_SUMMARY_FOR_O, dùng A15 đơn thuốc, thêm “Chủ nhiệm khoa.”, thêm phần thứ 4 hoặc mục cấm, render metadata/check/error, tự sửa source A/C hoặc che lỗi source, hoặc việc sửa dòng 1 làm thay đổi dòng 2-4.
+
+O3_ERROR_RULE
+    Khi NEEDS_FIX/BLOCKED, O3_ERROR ghi rõ lỗi cụ thể, không render hoàn chỉnh O3 và không tự fill bằng nguồn cấm.
+    Giữ các mã lỗi hiện có:
+        - ERR-O3-FORMAT
+        - ERR-O3-SECTION-COUNT
+        - ERR-O3-CODEBLOCK-COUNT
+        - ERR-O3-PART1-LINE-COUNT
+        - ERR-O3-PART1-LINE1-FORMAT
+        - ERR-O3-PART1-LINE1-CONTENT-INCOMPLETE
+        - ERR-O3-PART1-LINE1-SOURCE-MAPPING
+        - ERR-O3-PART1-LINE1-A3-OMISSION
+        - ERR-O3-PART1-LINE1-FORBIDDEN-SOURCE
+        - ERR-O3-DIAGNOSIS-LINE-FORMAT
+        - ERR-O3-TREATMENT-LINE-FORMAT
+        - ERR-O3-DISCHARGE-END-LINE-FORMAT
+        - ERR-O3-PART2-FORMAT
+        - ERR-O3-SECTION3-NOT-EXACT-C7
+        - ERR-O3-FORBIDDEN-EXTRA-SECTION
+    Nếu lỗi do A12 thì route về A12; nếu lỗi do A13 thì route về A13; nếu lỗi do C7_TREATMENT_END_LINE hoặc C7_DISCHARGE_CONDITION thì route về C7/source C7.
+    Khi PASS, O3_RENDER_CHECK = PASS nếu hệ thống dùng; không render check/error metadata trong bệnh án thường quy.
+
+O3_REUSE_RULE
+    Contract hiện tại không định nghĩa lifecycle CREATE/UPDATE/REUSE riêng cho O3.
+    O3 không đọc/reuse old O3_OUTPUT; khi G plan O3, render lại từ current allowed sources.
+    Old output không phải source và không dùng rendered output cũ để dựng O3 mới.
+
+O3_END
+    Sau O3, hệ thống render O tiếp theo theo G_STATE.O_RENDER_ORDER; O3 không tự chạy O4, không gọi A/C, không sửa state và không sửa O khác.
+
+<<< END O3
+####################################################################################################
+
+O4 — BỆNH TRÌNH ĐIỀU TRỊ
+Version: BA S-G-A-C-O V4 compact allowlist
+Update: 24/07/2026 GMT+7 — strict C7 renderer, one text code block per day
+
+O4_ROLE
+    O4 render phần “BỆNH TRÌNH ĐIỀU TRỊ”.
+    O4 thuộc layer O và là renderer-only: chỉ chọn theo C7_STATE.C7_RENDER_SCOPE và trình bày exact day slice đã có trong full C7_STATE.C7_FOR_O4.
+    O4 chỉ tách exact day header khỏi opaque daily body để đóng gói presentation: mỗi ngày có header ngoài code block và một text code block riêng cho body ngày đó.
+    Việc đóng gói không tạo, suy luận, sửa, làm nặng/nhẹ diễn biến hoặc thay dữ liệu lâm sàng do C7 tạo.
+    O4 không phải O3 tổng kết bệnh án/ra viện, O5 gợi ý thuốc, O6 đơn thuốc, O8 bệnh án chi tiết, O10/O11 cảnh báo hoặc module source A/C/G.
+    O4_OUTPUT nếu có là rendered text, không phải state, không là source cho A/C/O khác và không có REV riêng.
+    O4 không tạo O4_STATE, O4_REV, O4_FINAL, O4_SOURCE_REV hoặc lifecycle state riêng.
+
+O4_ALLOWED_SOURCE
+    O4 chỉ được đọc các nguồn sau:
+        1. G_STATE của ROUND hiện tại:
+            - Chỉ để kiểm O4 nằm trong G_STATE.O_RENDER_LIST hoặc G_STATE.O_RENDER_ORDER, đã đến lượt render theo G_STATE.O_RENDER_ORDER và metadata điều phối cần thiết.
+            - Không dùng G_STATE làm dữ kiện bệnh án.
+        2. C_GATE mới nhất:
+            - Chỉ làm gate hợp lệ cho C_STATE/C7_STATE.
+        3. Full current C_STATE mới nhất:
+            - Chỉ để truy cập current C7_STATE nếu C7 đã chạy formal.
+        4. C7_STATE.C7_FOR_O4:
+            - Nguồn bắt buộc duy nhất cho exact day headers và exact opaque daily bodies.
+            - O4 chỉ nhận diện exact day header để xác định boundary đóng gói đến header ngày tiếp theo hoặc hết C7_FOR_O4; không parse/diễn giải nội dung lâm sàng trong body.
+        5. C7_STATE.C7_RENDER_SCOPE:
+            - Metadata bắt buộc duy nhất để chọn FULL hoặc DELTA và exact day headers; O4 không đọc C7_COMPONENT_PROGRESSION_PLAN/range/provenance và không suy mode từ raw user input.
+        6. C7_STATE.C7_TREATMENT_END_LINE:
+            - Nguồn duy nhất cho câu kết thúc khi khác NONE; O4 exact-copy từng ký tự, không tự tạo/sửa/parse loại kết thúc/ngày/tên bệnh viện.
+        7. C7 metadata nếu cần: C7_CHECK, C7_ERROR, C7_REV, C7_SOURCE_A_REV.
+            - Chỉ để kiểm producer formal/current/PASS và consistency; không render vào bệnh trình.
+    O4 không được đọc/dùng A_GATE, raw user input, hidden memory/trí nhớ ẩn, A1-A15/A14/A13, O_OUTPUT cũ, O4_OUTPUT cũ, rendered output cũ, O3_OUTPUT, O5_OUTPUT, O6_OUTPUT, O5/O6 đơn thuốc, A_STATE_PATCH, C_STATE_PATCH, A_STATE ngoài mapping O4, C_STATE ngoài mapping O4, web/guideline/source ngoài, metadata kỹ thuật để render thành nội dung bệnh trình hoặc PLAN_9 context như formal state.
+
+O4_ALLOWED_ACTION
+    O4 được RUN/render chỉ khi đồng thời:
+        1. O4 nằm trong G_STATE.O_RENDER_LIST hoặc G_STATE.O_RENDER_ORDER.
+        2. Đã đến lượt theo G_STATE.O_RENDER_ORDER.
+        3. C_GATE_STATUS = PASS.
+        4. C7 đã chạy formal.
+        5. C7_CHECK = PASS.
+        6. C7_FOR_O4 có mặt để đóng gói.
+        7. C7_RENDER_SCOPE có mặt, đúng exact schema và consistency đã được C7_CHECK xác nhận.
+        8. O4 có thể ánh xạ mỗi exact source day header với đúng một contiguous opaque daily body.
+    O4 SKIP khi O4 không nằm trong render plan hoặc chưa đến lượt:
+        - Không output.
+        - Không tạo/cập nhật O4_OUTPUT.
+        - Không in “O4_OUTPUT = SKIP”.
+        - Không tự thêm O4 vào render plan.
+    O4 BLOCKED/NEEDS_FIX khi thiếu điều kiện RUN, C_GATE_STATUS != PASS, C7 chưa chạy formal, C7_CHECK không PASS, C7_FOR_O4/C7_RENDER_SCOPE thiếu hoặc invalid, không thể ánh xạ header/body để đóng gói, hoặc output O4 làm sai selection/packaging/fidelity của source. Invalid selector là producer defect C7: O4 route C7, không repair/infer header, không guess FULL, không fallback render toàn bộ và không render partial output.
+    O4 không tự kiểm lại dd/mm/yyyy, số/syntax bullet, continuity, ĐIỂM BỆNH grammar/vị trí, no-data, treatment leak, legacy header, canonical end-line, ngày/type/bệnh viện end-line hoặc cross-check ngày kết thúc; các producer invariants này thuộc C7 sau C7_CHECK = PASS.
+    O4 không tự chạy C, không tự chạy C7, không tự gọi O khác, không tự thêm C7 vào C_RUN_ORDER và không tự sửa C_RUN_ORDER/O_RENDER_LIST/O_RENDER_ORDER.
+    Khi source gate không đạt, O4 route về C7 và không tự sửa/fallback. Khi source đã PASS nhưng O4 đóng gói hoặc bảo toàn source sai, O4_RENDER_CHECK = NEEDS_FIX/BLOCKED nếu hệ thống dùng check.
+
+O4_ALLOWED_WRITE
+    O4 chỉ được ghi/render:
+        1. O4_OUTPUT hoặc rendered text nếu contract dùng field này.
+        2. O4_RENDER_CHECK = PASS / NEEDS_FIX / BLOCKED nếu hệ thống dùng internal check.
+    O4 không render metadata check/error vào bệnh án thường quy.
+    O4 không được ghi O4_STATE, O4_REV, O4_FINAL, G_STATE, A_STATE, C_STATE, C7_STATE, O1-O3, O5-O13, A1-A15, C1-C7 hoặc S/G.
+    Không thêm field O4_ERROR như schema output riêng; O4_ERROR_RULE chỉ là rule mô tả lỗi.
+
+O4_RENDER_SCHEMA
+    O4 output thật là phần “BỆNH TRÌNH ĐIỀU TRỊ”.
+    Nếu hệ thống hiện hành yêu cầu tiêu đề, giữ literal:
+        BỆNH TRÌNH ĐIỀU TRỊ
+    O4 parse tất cả exact day header của full C7_FOR_O4 để lập canonical ordered source slices. MODE=FULL với SELECTED_DAY_HEADERS=[] giữ current full algorithm và render mọi source slice. MODE=DELTA scan các source slice theo canonical C7_FOR_O4 order, membership-test exact header với SELECTED_DAY_HEADERS và chỉ render selected slice; DELTA/[] không render daily block. O4 không iterate selector order làm source authority, không thêm unselected historical block và không invent day.
+    Với mỗi source slice cần render, O4 exact-copy header ngoài code block rồi ngay sau header render đúng một fenced code block có language `text`. Code block chỉ chứa toàn bộ exact opaque daily body sau header đó đến header ngày kế tiếp hoặc hết C7_FOR_O4; không chứa day header, body ngày khác, hoặc nội dung tự tạo.
+    Không dùng whole-course code block, không gộp hai ngày vào một code block, không tách body một ngày thành nhiều code block, không tạo code block không có header tương ứng, và không tạo code block riêng cho ĐIỂM BỆNH.
+    MODE=FULL giữ current end-line behavior: nếu C7_TREATMENT_END_LINE khác NONE, sau toàn bộ exact daily body của canonical final day trong chính code block ngày cuối, O4 exact-copy field rồi thêm đúng một dòng literal `Chủ nhiệm khoa.`. MODE=DELTA chỉ làm như vậy khi field khác NONE và canonical final course day header của full C7_FOR_O4 nằm trong SELECTED_DAY_HEADERS và được render; nếu final header không selected thì không render end-line/chữ ký và tuyệt đối không gắn chúng vào middle selected day. Không đặt end-line/chữ ký ngoài code block hoặc trong code block riêng.
+    Nếu C7_TREATMENT_END_LINE = NONE, O4 không thêm end-line hoặc chữ ký.
+    Không thêm heading/footing nếu contract hiện hành không yêu cầu; title nếu có nằm ngoài mọi daily code block.
+    Không thêm footer hành chính, ký tên, “RA VIỆN”, đơn thuốc, tư vấn, tái khám, hướng dùng thuốc hoặc metadata kỹ thuật; literal `Chủ nhiệm khoa.` chỉ được thêm đúng theo rule end-line trên.
+
+O4_LOGIC_RULES
+    C7_FOR_O4 là render-ready source.
+    O4 được parse chỉ exact day headers để đóng gói. Mỗi daily body là opaque contiguous source slice: O4 không parse/diễn giải bullet, triệu chứng, ĐIỂM BỆNH, ngày ra viện, loại kết thúc hoặc bệnh viện.
+    O4 phải exact-preserve từng ký tự source của mọi rendered header và daily body, canonical source order và association header-body. Với FULL, sau khi bỏ chỉ fenced code block packaging, ghép header + body phải exact-match toàn bộ C7_FOR_O4 theo UTF-8 bytes. Với DELTA, kết quả phải exact-match ordered projection/concatenation của chính selected source header-body slices theo UTF-8 bytes; không yêu cầu exact-match unselected phần của full C7_FOR_O4.
+    Khi end-line được phép theo MODE/final-header selection, phần bổ sung duy nhất là C7_TREATMENT_END_LINE exact-copy rồi đúng một `Chủ nhiệm khoa.` trong canonical final-day code block. O4 không parse/cross-check nội dung field này.
+    O_PRESENTATION_NORMALIZATION không được thay đổi bất kỳ ký tự clinical/source nào của C7_FOR_O4 trong O4; chỉ được dùng cho code-fence/blank-line packaging không làm thay đổi reconstruction exact-match.
+    O4 không rewrite, làm mượt, thêm/bỏ/sửa/đảo ngày hoặc body, chuyển nội dung giữa ngày, tạo bệnh trình từ raw input, dùng output cũ hoặc dùng A/C/O khác để bù bệnh trình. Nếu C7 gate/source không đạt, route về C7; nếu O4 output không exact-preserve/đóng gói đúng, O4 NEEDS_FIX/BLOCKED.
+
+O4_SPECIAL_RULES
+    ĐIỂM BỆNH:
+        - Nếu block đã nằm trong source daily body, O4 giữ exact nguyên block trong cùng code block của ngày đó.
+        - O4 không tự xác định ngày điểm bệnh, không tự tính thứ, không tự chọn thứ Tư, không tự thêm/sửa/xóa/di chuyển ĐIỂM BỆNH, không tách block thành code block riêng và không tự kiểm lại grammar/vị trí source đã do C7_CHECK sở hữu.
+    Câu kết thúc điều trị:
+        - C7_TREATMENT_END_LINE là nguồn duy nhất; MODE=FULL giữ current exact-copy sau canonical final daily body. MODE=DELTA chỉ exact-copy field và thêm đúng một “Chủ nhiệm khoa.” trong selected canonical final-day code block khi field khác NONE và final header selected.
+        - O4 không tự tạo/sửa ngày, loại kết thúc, tên bệnh viện, câu kết thúc hoặc C7_TREATMENT_END_LINE; không dùng A14, raw user input, O3 hoặc C7_DISCHARGE_CONDITION làm fallback.
+        - Nếu field NONE, hoặc DELTA không select canonical final header, O4 không thêm end-line/chữ ký. O4 không thêm hơn một chữ ký, không đặt suffix vào ngày giữa, không dùng chữ ký ĐIỂM BỆNH thay chữ ký kết thúc và không đặt end-line/chữ ký ngoài hoặc trong code block riêng.
+    Metadata:
+        - Không render metadata kỹ thuật, gồm STATE_VERSION, ROUND_ID, RUN_MODE, Ax_REV, Cx_REV, Ox_REV nếu có, UPDATED_AT, A_CHECK/A_ERROR, C_CHECK/C_ERROR, O_CHECK/O_ERROR, CREATE/UPDATE/REUSE, A_MODULE_REV, C_MODULE_REV, O4_RENDER_CHECK.
+
+O4_CHECK_PASS_IF
+    PASS khi tất cả điều kiện sau đúng:
+        1. O4 nằm trong G_STATE.O_RENDER_LIST/O_RENDER_ORDER và đã đến lượt render.
+        2. C_GATE_STATUS = PASS.
+        3. C7 đã chạy formal.
+        4. C7_CHECK = PASS.
+        5. C7_FOR_O4 có mặt, mỗi exact source day header ánh xạ đúng một contiguous opaque daily body và C7_RENDER_SCOPE đúng exact two-key schema: MODE=FULL|DELTA, SELECTED_DAY_HEADERS là list; FULL bắt buộc []; DELTA item là unique exact source header xuất hiện đúng một lần và theo canonical source order.
+        6. MODE=FULL: mỗi source header được exact-copy một lần ngoài code block, ngay sau đó có đúng một text code block và số code block bằng số source header. MODE=DELTA: mỗi selected header được exact-copy đúng một lần với đúng một immediately-following text code block; không unselected header/body được render và số code block bằng số selected header.
+        7. Mỗi rendered code block chỉ chứa exact complete opaque body của header ngay trước nó; không chứa header, body ngày khác, hoặc source body bị tách/gộp/di chuyển/mutated; output theo canonical C7_FOR_O4 order.
+        8. Sau khi bỏ code-fence packaging, FULL reconstructed daily course exact-match toàn bộ C7_FOR_O4; DELTA reconstructed course exact-match ordered projection/concatenation của selected source header-body slices theo UTF-8 bytes và không phải exact-match phần unselected.
+        9. ĐIỂM BỆNH nếu nằm trong rendered selected body được giữ nguyên trong chính code block đó; không có code block riêng. Nếu containing day unselected thì ĐIỂM BỆNH không được render độc lập.
+        10. MODE=FULL giữ current end-line/signature invariant. MODE=DELTA chỉ exact-copy end-line và một `Chủ nhiệm khoa.` sau selected canonical final-day body khi field khác NONE và final header selected; nếu final header unselected hoặc field NONE thì không có end-line/signature.
+        11. Không dùng nguồn ngoài allowlist, không tự sửa/bù C7, không infer selector/guess FULL/fallback all days, không render metadata kỹ thuật và không dùng O_PRESENTATION_NORMALIZATION để thay đổi source content.
+    Nếu đạt: O4_RENDER_CHECK = PASS nếu hệ thống dùng check.
+
+O4_NEEDS_FIX_IF
+    SKIP, không phải NEEDS_FIX, khi O4 không nằm trong render plan hoặc chưa đến lượt.
+    NEEDS_FIX/BLOCKED khi:
+        1. O4 được yêu cầu render nhưng không đủ điều kiện RUN.
+        2. C_GATE_STATUS != PASS, C7 chưa chạy formal hoặc C7_CHECK không PASS.
+        3. C7_FOR_O4/C7_RENDER_SCOPE thiếu, selector sai schema/mode/list/membership/uniqueness/order, hoặc O4 không thể ánh xạ source header/body để đóng gói; route C7 và không fallback FULL.
+        4. FULL không render đúng toàn bộ source headers, hoặc DELTA bỏ selected header/render unselected header; rendered header nằm trong code block, không có đúng một immediately-following code block, có code block không có selected/rendered header tương ứng, hoặc count không đúng mode.
+        5. Một code block chứa body của nhiều ngày, body một ngày bị tách thành nhiều code block, hoặc body/ĐIỂM BỆNH bị chuyển sang ngày khác hay code block riêng.
+        6. Output thêm/bỏ/sửa/đảo bất kỳ ký tự source header/body; FULL reconstruction không exact-match toàn C7_FOR_O4; hoặc DELTA reconstruction không exact-match ordered selected projection.
+        7. End-line không exact-copy, không nằm sau rendered canonical final daily body, bị lặp/thiếu/sửa, có code block riêng, signature thiếu/lặp/sai literal, xuất hiện khi field NONE, hoặc xuất hiện trong DELTA khi canonical final header không selected.
+        8. O4 dùng raw input, hidden memory, A/O output cũ, A14, A15, A13 labs-imaging, O3, O5 hoặc O6 để bù source; render metadata kỹ thuật; hoặc dùng O_PRESENTATION_NORMALIZATION để thay đổi source content.
+
+O4_ERROR_RULE
+    Giữ error code output fidelity:
+        - ERR-O4-FOR-O4-NOT-EXACT-C7: FULL reconstruction không exact-match C7_FOR_O4 hoặc DELTA reconstruction không exact-match ordered selected projection.
+    Có thể dùng internal O4_RENDER_CHECK = NEEDS_FIX/BLOCKED với lỗi cụ thể về daily code-block count/mapping/containment hoặc end-line/signature placement; không thêm O4_ERROR field nếu contract hiện tại không có field output riêng này.
+    Lỗi source producer thuộc C7 sau C7_CHECK = PASS; O4 không tự kiểm legacy header, treatment leak, no-data, special-block grammar hay end-line canonical/date/type/hospital. Nếu C_GATE_STATUS != PASS hoặc C7_CHECK != PASS, route về C7 và không render O4 hoàn chỉnh.
+    Nếu PASS: O4_RENDER_CHECK = PASS nếu hệ thống dùng; không render check/error metadata trong bệnh trình thường quy.
+    Không thêm field O4_ERROR nếu contract hiện tại không có field output riêng này.
+
+O4_REUSE_RULE
+    O4 không có lifecycle CREATE/UPDATE/REUSE riêng.
+    Không reuse output cũ.
+    Không dùng O4_OUTPUT cũ hoặc rendered output cũ làm source.
+    Khi G plan O4, render từ current allowed sources.
+    O4_OUTPUT không là nguồn cho A/C/O khác.
+    Không ghi “reuse O4”.
+    Không tạo O4_REV.
+
+O4_END
+    Sau O4, hệ thống render O tiếp theo theo G_STATE.O_RENDER_ORDER.
+    O4 không tự chạy O5, không gọi A/C, không sửa state và không sửa O khác.
+
+<<< END O4
+
+####################################################################################################
+
+O5 — GỢI Ý THUỐC / NHÓM THUỐC THAY THẾ
+Version: BA S-G-A-C-O V4 compact allowlist
+Update: 25/07/2026 GMT+7 — strict renderer of canonical C8_STATE
+
+O5_ROLE
+    O5 là strict renderer-only cho lựa chọn thuốc/nhóm thuốc thay thế do C8 tạo. O5 không chọn/thêm/thay thuốc, không tạo dữ liệu lâm sàng, liều, prescription hoặc cảnh báo mới và không sửa C8.
+
+O5_ALLOWED_SOURCE
+    O5 chỉ đọc G_STATE cho plan/order metadata; C_GATE_STATUS để xác nhận aggregate C gate PASS cho C8; full current C_STATE chỉ để truy cập C8_STATE; và current C8_STATE với C8_PRIMARY_MEDICATIONS_FROM_A15, C8_ALTERNATIVE_MEDICATION_OPTIONS, C8_CHECK, C8_ERROR cùng revision metadata khi cần.
+    O5 không đọc A15_STATE, A15_MEDICATION_LIST, A15_TREATMENT_COVERAGE, A15_TO_C3, C3_STATE, current user input, web, hidden memory, rendered/old output hoặc source ngoài C8.
+
+O5_ALLOWED_ACTION
+    RUN khi O5 được plan/đến lượt; C8 nằm trong C_RUN_ORDER; C_GATE_STATUS = PASS; current full C8_STATE tồn tại; C8_CHECK=PASS; C8_ERROR=NONE; output traceable one-to-one.
+    SKIP khi không nằm plan/chưa đến lượt. BLOCKED/NEEDS_FIX khi thiếu/invalid/stale C8, option thiếu field, phải fallback A15/C3, O5 tự tạo alternative hoặc output làm alternative thành current prescription.
+
+O5_ALLOWED_WRITE
+    O5 chỉ render output/check reason kỹ thuật nếu framework dùng; không tạo state/revision và không sửa G/A/C/O khác.
+
+O5_RENDER_SCHEMA
+    Heading: GỢI Ý THUỐC / NHÓM THUỐC THAY THẾ
+    Render đúng hai phần:
+        1. Thuốc điều trị chính: PRIMARY_MEDICATION; TREATMENT_TARGET từ C8_PRIMARY_MEDICATIONS_FROM_A15.
+        2. Các thuốc/nhóm thuốc có thể cân nhắc thay thế: ALTERNATIVE_MEDICATION_OR_GROUP; ALTERNATIVE_THERAPEUTIC_CLASS; WHEN_TO_CONSIDER; RATIONALE; KNOWN_CONTRAINDICATION_CHECK; KNOWN_INTERACTION_CHECK; KNOWN_DUPLICATION_CHECK từ C8_ALTERNATIVE_MEDICATION_OPTIONS.
+    Với mỗi option hợp lệ phải render nguyên ý nghĩa: “Đây là phương án thay thế, chưa thuộc đơn thuốc hiện tại, không dùng đồng thời và chỉ được thay sau khi bác sĩ/A15 lựa chọn lại.”
+    Nếu ALTERNATIVE_MEDICATION_OR_GROUP=NONE, render không xác định được lựa chọn khác nhóm phù hợp và exact NO_VALID_ALTERNATIVE_REASON; không tự bổ sung option.
+
+O5_LOGIC_RULES
+    O5 giữ semantic C8, chỉ áp dụng O_PRESENTATION_NORMALIZATION. Alternative không phải thuốc đang dùng/đơn hiện tại và không phải chỉ định tự đổi thuốc.
+    O5 không chọn, thêm, thay thuốc; không tạo dose/route/frequency/duration/adjustment/prescription; không tạo cảnh báo; không sửa/run C8/A15/C3/O11; không fallback.
+
+O5_CHECK_PASS_IF
+    PASS khi planned/đến lượt; C8_STATE full/current/PASS; error NONE; primary/options đủ schema; two-section mapping one-to-one; required alternative notice có mặt; no-option reason được render; không tạo nội dung/metadata.
+
+O5_NEEDS_FIX_IF
+    NEEDS_FIX/BLOCKED khi C8 thiếu/invalid/stale; source hoặc option thiếu/sai; O5 fallback A15/C3/raw/web/output cũ; tự tạo/sửa alternative; tạo dosing/prescription; bỏ notice; hoặc biến alternative thành thuốc dùng đồng thời/current prescription.
+
+O5_ERROR_RULE
+    Khi blocked không render bản hoàn chỉnh, không sửa C8 và nêu exact C8 field/precondition cần sửa nếu framework yêu cầu.
+
+O5_REUSE_RULE
+    O5 không có clinical lifecycle và không reuse rendered output; mỗi lần plan phải render current canonical C8_STATE.
+
+O5_END
+    Sau O5 render O kế tiếp theo O_RENDER_ORDER; không tự chạy C8/O khác hoặc sửa state.
+<<< END O5
+
+####################################################################################################
+
+O7 — BIÊN BẢN HỘI CHẨN
+Version: BA S-G-A-C-O v4
+Update: 14/08/2026 GMT+7 — nhánh cận lâm sàng dùng BODY chỉ từ current user request, wording đầy đủ phần 2–3
+
+O7_ROLE
+    O7 là strict renderer/output selective thuộc layer O cho BIÊN BẢN HỘI CHẨN.
+    O7 chỉ render khi được G_STATE plan và đã đến lượt; chỉ trình bày dữ liệu đã có từ current allowed state theo mapping O7.
+    O7 không phải module tạo dữ liệu hội chẩn, A12 chẩn đoán, A13 hướng điều trị/chỉ định, A14 kết quả cận lâm sàng/hành chính, A15 thuốc/đơn thuốc, C module, O2 tóm tắt bệnh án, O3 tổng kết/ra viện, O4 bệnh trình, O5/O6 thuốc/đơn thuốc, O8 bệnh án chi tiết, O11 cảnh báo hoặc O13 chẩn đoán phân biệt.
+    O7 không tạo O7_STATE, O7_REV, O7_FINAL, O7_SOURCE_REV, lifecycle state riêng hoặc schema state mới.
+    O7 output/rendered text nếu có không phải state nguồn, không là source cho A/C/O khác và không được reuse như nguồn lâm sàng.
+
+O7_ALLOWED_SOURCE
+    O7 chỉ được đọc các nguồn sau:
+        1. G_STATE của ROUND hiện tại: chỉ kiểm O7 có trong O_RENDER_LIST/O_RENDER_ORDER, đã đến lượt render và metadata điều phối cần thiết; không dùng làm nguồn dữ kiện bệnh án và không render metadata G_STATE.
+        2. A_GATE mới nhất: chỉ kiểm A_GATE_STATUS = PASS và full current A_STATE hợp lệ; không render A_GATE và không dùng A_GATE làm dữ kiện hội chẩn.
+        3. Full current A_STATE mới nhất: chỉ truy cập field được mapping rõ trong O7_ALLOWED_SOURCE; không dùng A_STATE ngoài mapping O7 để tự dựng hội chẩn.
+        4. A1_STATE.A1_REASON hoặc field tương đương: chỉ dùng lý do vào viện trong phần 1 khi cần làm rõ bối cảnh hội chẩn.
+        5. A2_STATE.A2_FINAL hoặc field tương đương: chỉ dùng tiền sử liên quan trong phần 1.
+        6. A3_STATE.A3_FOR_O8: chỉ dùng cách vào viện, thời gian khởi phát, bệnh sử hiện tại, triệu chứng cơ năng liên quan và xử trí tại nhà nếu đã có; không dùng nguyên A3_FOR_O8 nếu gây lặp/lan man và không có field sạch để trích.
+        7. A4_STATE đến A11_STATE: chỉ dùng dấu hiệu khám/triệu chứng thực thể liên quan trực tiếp đến cơ quan cần hội chẩn hoặc lý do chuyển viện; không lấy khám toàn bộ cơ quan không liên quan.
+        8. A12_STATE.A12_FINAL: nguồn duy nhất cho dòng “Chẩn đoán: ...”; O7 không tự sửa chẩn đoán, không thêm ICD nếu A12 không có và không tạo chẩn đoán mới.
+        9. User request hiện tại: xác định loại hội chẩn; với nhánh cận lâm sàng/chẩn đoán hình ảnh/thăm dò, đây là nguồn duy nhất cho procedure BODY dùng chung ở phần 2 và phần 3; với nhánh chuyển viện, dùng tên bệnh viện nhận nếu user cung cấp rõ. Không dùng user request để bịa thêm triệu chứng, khám, chẩn đoán, điều trị, thuốc hoặc dữ kiện lâm sàng ngoài state.
+            - Procedure BODY phải lấy trực tiếp từ current user request và giữ đầy đủ action phrase cùng toàn bộ qualifier thuộc thủ thuật, gồm modality, vị trí/bên/vùng giải phẫu, kỹ thuật, số dãy, protocol, contrast/thuốc cản quang, thời điểm, tư thế, số lượng và qualifier khác nếu user cung cấp; không semantic-compress, không bỏ action hoặc qualifier.
+            - Chỉ được loại consultation-command wrapper như “làm hội chẩn”, “hội chẩn” và sentence-level prefix như “bệnh nhân có chỉ định”, “chỉ định”, “đề nghị cho bệnh nhân”, “đề nghị” khi ranh giới với actual procedure BODY được nhận diện deterministic; không coi “chụp”, “làm” khi thuộc action thủ thuật, hoặc qualifier thủ thuật là wrapper. Nếu không tách an toàn thì BLOCKED/NEEDS_FIX, không rút gọn theo suy đoán.
+        10. A14_STATE field điều trị đã thực hiện nếu file hiện hành có field rõ: chỉ dùng cho dòng điều trị/đáp ứng điều trị trong phần 1 khi đồng thời đủ 3 điều kiện: user yêu cầu đưa điều trị vào biên bản, có dữ kiện điều trị cụ thể đã thực hiện, và dữ kiện đó liên quan trực tiếp lý do hội chẩn; không dùng A14 cho hành chính, thời gian hội chẩn, địa điểm hội chẩn, thành phần, chủ trì/thư ký, tóm tắt bệnh án hoặc kết quả cận lâm sàng chi tiết nếu contract O7 không cho phép.
+    O7 không được đọc/dùng raw user input để tạo dữ kiện lâm sàng mới, hidden memory/trí nhớ ẩn, web/guideline/source ngoài, O_OUTPUT cũ, O7_OUTPUT cũ, rendered output cũ, patch/delta, A_STATE_PATCH, C_STATE_PATCH, A_MODULE_REV làm nội dung render, C_STATE, Cx_STATE, C4_FOR_O7, C5_STATE, C6_STATE, A13_LABS, A13_IMAGING, A13_TREATMENT, hướng điều trị chung, phác đồ gợi ý, thuốc/đơn thuốc, A15_STATE, O2_OUTPUT, O3_OUTPUT, O4_OUTPUT, O5_OUTPUT, O6_OUTPUT, O8_OUTPUT hoặc output O khác để chọn, tạo hoặc bù procedure BODY nhánh cận lâm sàng.
+
+O7_ALLOWED_ACTION
+    RUN/render khi đồng thời: O7 nằm trong G_STATE.O_RENDER_LIST hoặc G_STATE.O_RENDER_ORDER; đã đến lượt theo G_STATE.O_RENDER_ORDER; A_GATE_STATUS = PASS; full current A_STATE hợp lệ; đủ source bắt buộc để render 3 phần; xác định đúng một nhánh hội chẩn hợp lệ.
+    SKIP khi O7 không nằm trong render plan hoặc chưa đến lượt render; khi SKIP không output, không tạo/cập nhật O7_OUTPUT, không in “O7_OUTPUT = SKIP” và không tự thêm O7 vào render plan.
+    O7 phải xác định đúng một trong hai nhánh: hội chẩn cận lâm sàng/chẩn đoán hình ảnh/thăm dò hoặc hội chẩn chuyển viện; không xuất đồng thời hai nhánh.
+    BLOCKED/NEEDS_FIX khi O7 được yêu cầu render nhưng thiếu điều kiện RUN, A_GATE_STATUS != PASS, full current A_STATE không hợp lệ, thiếu A12_STATE.A12_FINAL, thiếu dữ kiện xác định loại hội chẩn, nhánh cận lâm sàng/chẩn đoán hình ảnh/thăm dò không có procedure BODY rõ do current user request cung cấp hoặc BODY không thể tách an toàn, nhánh chuyển viện thiếu tên bệnh viện nhận, A3/A4-A11 chưa đủ dữ kiện để viết phần 1, A3_FOR_O8 gây lặp tiền sử/lý do vào viện mà không có field sạch để trích, source mâu thuẫn/không phù hợp format O7, dùng nguồn cấm, output sai schema 3 phần/3 text code block hoặc output chứa dữ kiện do O7 tự bịa.
+    Khi BLOCKED/NEEDS_FIX, O7 không tự bịa, không tự sửa A, không tự chạy A module, không tự chạy C, không tự gọi O khác, không tự thêm O7 vào render plan, không tự sửa G_STATE và không fallback sang raw input, hidden memory, output cũ, C hoặc web/guideline.
+
+O7_ALLOWED_WRITE
+    O7 chỉ được ghi/render O7 rendered text/O7_OUTPUT nếu hệ thống vận hành dùng field này, lý do BLOCKED/NEEDS_FIX nếu framework yêu cầu, và O7_RENDER_CHECK nếu framework nội bộ dùng; O7_RENDER_CHECK chỉ là metadata kỹ thuật và không render vào biên bản.
+    O7 không được ghi/tạo/sửa O7_STATE, O7_REV, O7_FINAL, G_STATE, A_STATE, C_STATE, O module khác, A module khác, C module khác hoặc S/G.
+    Không dùng O7 output làm source cho module khác nếu contract khác không nêu rõ.
+
+O7_RENDER_SCHEMA
+    Output bắt buộc gồm đúng 3 phần; ba heading nằm ngoài text code block; mỗi phần có đúng một text code block; tổng cộng đúng 3 text code block; không thêm phần thứ 4, không gộp text code block, không tách text code block.
+    Phần 1 heading literal: Tóm tắt quá trình diễn biến bệnh, quá trình điều trị và chăm sóc người bệnh:
+        - Sau heading là một text code block.
+        - Dòng đầu là đoạn văn liền mạch lấy từ A2/A3/A1 theo điều kiện, đủ bối cảnh lâm sàng liên quan lý do hội chẩn, không chép lan man toàn bộ bệnh án và không biến thành O2.
+        - Sau dòng đầu là bullet triệu chứng cơ năng liên quan từ A3, rồi bullet dấu hiệu khám/thực thể liên quan từ A4-A11.
+        - Dòng điều trị/đáp ứng điều trị chỉ xuất nếu đủ điều kiện A14 được phép.
+        - Dòng khám chuyên khoa/ý kiến chuyên khoa chỉ xuất nếu bác sĩ cung cấp hoặc nhắc rõ.
+        - Không xuất nhãn nội bộ “Triệu chứng cơ năng liên quan:” hoặc “Dấu hiệu khám liên quan:”.
+        - Không đưa lập luận/chỉ định cận lâm sàng hoặc chỉ định chuyển viện vào phần 1.
+    Phần 2 heading literal: Kết luận (sau khi đã khám lại và thảo luận):
+        - Sau heading là một text code block.
+        - Dòng 1 bắt buộc: Chẩn đoán: [A12_STATE.A12_FINAL]
+        - Dòng 2 chọn đúng một nhánh: nhánh cận lâm sàng/chẩn đoán hình ảnh/thăm dò dùng exact semantic template `Bệnh nhân có chỉ định [BODY] để chẩn đoán và tiên lượng`, trong đó BODY là procedure BODY đầy đủ chỉ từ current user request; nhánh chuyển viện dùng câu chỉ định chuyển bệnh viện cụ thể với tên bệnh viện nhận do user cung cấp rõ hoặc source hợp lệ.
+        - Không xuất đồng thời hai nhánh, không thêm chẩn đoán mới và không thêm ICD nếu A12 không có.
+    Phần 3 heading literal: Hướng điều trị tiếp:
+        - Sau heading là một text code block.
+        - Nội dung chọn đúng một nhánh: nhánh cận lâm sàng/chẩn đoán hình ảnh/thăm dò dùng exact semantic template `Đề nghị cho bệnh nhân [BODY] để chẩn đoán và tiên lượng`, dùng đúng cùng BODY và toàn bộ qualifier đã render ở phần 2; nhánh chuyển viện đề nghị chuyển bệnh viện cụ thể.
+        - Không xuất đồng thời hai nhánh, không tự tạo tên bệnh viện và không biến thành phác đồ điều trị dài.
+    Không render metadata kỹ thuật, O7_RENDER_CHECK, O7_ERROR, STATE_VERSION, ROUND_ID, RUN_MODE, A/C/O REV, A_CHECK/C_CHECK/O_CHECK, CREATE/UPDATE/REUSE, A_MODULE_REV/C_MODULE_REV, output cũ hoặc debug text.
+
+O7_LOGIC_RULES
+    O7 không có no-data literal “chưa có hội chẩn”. Nếu O7 không nằm trong render plan thì SKIP không output; nếu thiếu dữ kiện bắt buộc thì BLOCKED/NEEDS_FIX hoặc hỏi lại thông tin bắt buộc nếu user cần xuất bản cuối.
+    O7 phải giữ nguyên nội dung lâm sàng/source semantic từ các field A được allowlist; O7 chỉ được áp dụng O_PRESENTATION_NORMALIZATION khi render heading, bullet, text code block, indentation và blank line theo schema O7. O7 không sửa chính tả, từ ngữ, thuật ngữ, ngày tháng, số liệu, đơn vị hoặc nội dung lâm sàng; mọi lỗi ngoài allowlist presentation phải BLOCKED/NEEDS_FIX và route về module A/source tương ứng.
+    O7 không tự tạo thời gian hội chẩn, địa điểm hội chẩn, thành phần tham gia, chủ trì, thư ký, chữ ký/họ tên/chức danh, kết luận hội chẩn ngoài A12/nhánh được phép, hướng xử trí ngoài câu mẫu nhánh được phép, tên bệnh viện nhận, tên xét nghiệm/thăm dò/chẩn đoán hình ảnh, triệu chứng/khám/điều trị không có trong source.
+    Phần 1 chỉ tóm tắt bệnh cảnh liên quan hội chẩn; không biến thành O2, không chép toàn bộ bệnh án, không lặp tiền sử/lý do vào viện do A3 nếu đã có dòng đầu sạch, không đưa chỉ định/hướng điều trị/phác đồ vào phần 1 và không đưa thuốc/đơn thuốc vào phần 1. O_PRESENTATION_NORMALIZATION không cho phép O7 rewrite, derive, làm mượt hoặc chuẩn hóa y văn phần tóm tắt bệnh cảnh; phần tóm tắt chỉ được dùng dữ liệu A allowlist đã có và giữ đúng ý nghĩa nguồn.
+    Phần 2 lấy chẩn đoán từ A12, không tự sửa A12, không tạo chẩn đoán mới và không thêm ICD nếu A12 không có.
+    Phần 3 chỉ render câu theo nhánh, không tạo phác đồ điều trị dài, không dùng A13_TREATMENT và không dùng A15.
+    Với nhánh cận lâm sàng/chẩn đoán hình ảnh/thăm dò, O7 chỉ tạo một procedure BODY từ current user request theo rule wrapper-removal deterministic, giữ nguyên toàn bộ semantic/action/qualifier của actual procedure và dùng lại chính BODY đó ở cả phần 2 và phần 3. Không được semantic-compress BODY; các qualifier như `32 dãy`, `không tiêm thuốc cản quang`, `có tiêm thuốc cản quang` hoặc equivalent user cung cấp phải còn nguyên ở cả hai phần.
+    Procedure BODY không được còn consultation wrapper hoặc sentence-level prefix làm output chứa `chỉ định chỉ định`, `đề nghị cho bệnh nhân chỉ định`, `đề nghị cho bệnh nhân đề nghị` hoặc `bệnh nhân có chỉ định bệnh nhân có chỉ định`; nếu không canonicalize an toàn mà không mất semantic/qualifier thủ thuật thì BLOCKED/NEEDS_FIX.
+
+O7_SPECIAL_RULES
+    Boundary với A12: A12 là nguồn duy nhất cho dòng “Chẩn đoán:”; O7 không tự đổi chẩn đoán, không thêm ICD nếu A12 không có và không sửa A12.
+    Boundary với A13: O7 không đọc/dùng A13_LABS, A13_IMAGING hoặc A13_TREATMENT để chọn, tạo, bù hoặc làm fallback cho procedure BODY nhánh cận lâm sàng/chẩn đoán hình ảnh/thăm dò; BODY chỉ được lấy từ current user request. A13_LABS/A13_IMAGING dù có dữ liệu cũng không thay thế được BODY user còn thiếu; O7 phải BLOCKED và yêu cầu user bổ sung.
+    Boundary với A14: O7 chỉ dùng field điều trị đã thực hiện nếu field rõ và đủ điều kiện; không dùng A14 cho hành chính/thời gian/địa điểm/thành phần/chủ trì/thư ký, không dùng A14 làm tóm tắt bệnh án và không lấy kết quả cận lâm sàng chi tiết từ A14 nếu contract O7 không cho phép.
+    Boundary với A15: O7 không đọc A15 để đưa thuốc/đơn thuốc vào O7.
+    Boundary với C: O7 không đọc C_STATE, Cx_STATE hoặc C4_FOR_O7; không dùng C5 để tạo chẩn đoán phân biệt; không dùng C6 để trả lời kiến thức/tra cứu; không tự chạy C.
+    Boundary với O: O7 không thay O2 tóm tắt bệnh án, O3 tổng kết/ra viện, O4 bệnh trình, O5/O6 thuốc/đơn thuốc, O8 bệnh án chi tiết, O11 cảnh báo hoặc O13 chẩn đoán phân biệt; không đọc/chấp nhận O2/O3/O4/O5/O6/O8 output để chép; không phụ thuộc output O khác; không tự gọi O khác.
+    Source/reuse: không dùng output cũ, O7_OUTPUT cũ, rendered output cũ, patch/delta, hidden memory hoặc web/guideline ngoài contract.
+    Form hành chính: không tự thêm thời gian, địa điểm, thành phần, chủ trì, thư ký, chữ ký/họ tên/chức danh vì schema hiện tại không có các mục này.
+
+O7_CHECK_PASS_IF
+    PASS khi: O7 nằm trong G_STATE.O_RENDER_LIST/O_RENDER_ORDER; đã đến lượt render; A_GATE_STATUS = PASS; full current A_STATE hợp lệ; chỉ dùng source allowlist; không dùng C; không dùng output O cũ/rendered output cũ; không dùng hidden memory/web; xác định đúng một nhánh hội chẩn; có A12 diagnosis để render dòng “Chẩn đoán:”; nhánh cận lâm sàng/chẩn đoán hình ảnh/thăm dò có procedure BODY rõ chỉ từ current user request, BODY giữ đầy đủ action phrase/toàn bộ qualifier user và không dùng A13_LABS/A13_IMAGING/A13_TREATMENT làm source hay fallback; phần 2 nhánh này đúng semantic `Bệnh nhân có chỉ định [BODY] để chẩn đoán và tiên lượng`; phần 3 đúng semantic `Đề nghị cho bệnh nhân [BODY] để chẩn đoán và tiên lượng`; hai phần dùng cùng BODY, không semantic-compress, không mất qualifier và không double-prefix; nhánh chuyển viện có tên bệnh viện nhận cụ thể; phần 1 đủ dữ kiện lâm sàng liên quan; output đúng 3 heading và 3 text code block; heading nằm ngoài text code block; mỗi phần có đúng một text code block; không thêm phần thứ 4; không xuất đồng thời hai nhánh; không tự bịa thời gian/địa điểm/thành phần/chủ trì/thư ký/chữ ký; không tự tạo chẩn đoán/chỉ định/hướng chuyển viện/thuốc/phác đồ; không dùng A13_TREATMENT; không dùng A15; không render metadata kỹ thuật.
+
+O7_NEEDS_FIX_IF
+    NEEDS_FIX/BLOCKED khi: O7 được plan nhưng thiếu điều kiện RUN; O7 chưa đến lượt render; A_GATE_STATUS != PASS; full current A_STATE không hợp lệ; thiếu A12_STATE.A12_FINAL; thiếu dữ kiện xác định loại hội chẩn; nhánh cận lâm sàng/chẩn đoán hình ảnh/thăm dò thiếu procedure BODY rõ do current user request cung cấp hoặc BODY không canonicalize an toàn; BODY lấy/tự chọn/tự bù từ A13_LABS, A13_IMAGING, A13_TREATMENT hay source khác; phần 2 nhánh này thiếu prefix `Bệnh nhân có chỉ định ` hoặc suffix ` để chẩn đoán và tiên lượng`; phần 3 thiếu prefix `Đề nghị cho bệnh nhân ` hoặc cùng suffix; hai phần dùng BODY khác nhau; BODY bị semantic-compress, bỏ action hoặc làm mất bất kỳ qualifier user nào như `32 dãy`, `không tiêm thuốc cản quang`; BODY/output có double-prefix; O7 tự thêm thủ thuật không có trong current user request; nhánh chuyển viện thiếu tên bệnh viện nhận; A3/A4-A11 chưa đủ dữ kiện để viết phần 1; A3_FOR_O8 gây lặp/lan man mà không có field sạch để trích; source mâu thuẫn hoặc không phù hợp format O7; dùng source ngoài allowlist; dùng C_STATE/Cx_STATE/C4_FOR_O7; dùng O output cũ/rendered output cũ; dùng hidden memory/web; dùng A15; output sai 3 phần/3 text code block; heading nằm trong text code block; tự bịa dữ kiện hội chẩn; tự sửa state nguồn; tự chạy A/C/O khác; render metadata kỹ thuật.
+
+O7_ERROR_RULE
+    Khi NEEDS_FIX/BLOCKED, O7 không render biên bản hoàn chỉnh, không tự bịa dữ kiện, không tự sửa A, không tự chạy C, không tự gọi O khác và không fallback sang output cũ/raw input/hidden memory/web.
+    Nếu framework cần lỗi/check nội bộ, ghi lý do theo framework nhưng không render lỗi/check metadata vào output thường quy.
+    Lỗi phải nêu source cần sửa: G render plan nếu O7 chưa được plan hoặc chưa đến lượt; A_GATE/A_STATE nếu nguồn A chưa hợp lệ; A12 nếu thiếu chẩn đoán; current user request nếu nhánh cận lâm sàng thiếu procedure BODY hoặc BODY không thể tách an toàn, với semantic rõ `Chưa có thông tin cụ thể về xét nghiệm/chẩn đoán hình ảnh/thăm dò cần hội chẩn. Yêu cầu user bổ sung.`; user request/source hợp lệ nếu thiếu tên bệnh viện nhận; A3/A4-A11 nếu thiếu dữ kiện phần 1. Thiếu procedure BODY nhánh cận lâm sàng phải BLOCKED, không route sang A13, không tự chạy A13 và không dùng planned investigation làm substitute.
+
+O7_REUSE_RULE
+    O7 không có lifecycle CREATE/UPDATE/REUSE state riêng theo contract hiện tại.
+    Không reuse rendered output cũ, O_OUTPUT cũ hoặc O7_OUTPUT cũ.
+    Khi G plan O7, render từ current allowed state của ROUND hiện tại.
+    Nếu hệ thống có REUSE nội bộ, REUSE chỉ là metadata điều phối, không làm nguồn nội dung và không render thường quy.
+    Không ghi “reuse O7” và không tạo O7_REV.
+
+O7_END
+    Sau O7, hệ thống render O tiếp theo theo G_STATE.O_RENDER_ORDER; O7 không tự chạy O8, không gọi A/C, không sửa state và không sửa O khác.
+
+<<< END O7
+
+####################################################################################################
+
+O8 — BỆNH ÁN CHI TIẾT
+Version: BA S-G-A-C-O v4
+Update: 28/06/2026 GMT+7 — compact ALLOWLIST renderer-only, A-only/FOR_O8 source, 1 khung code / 5 mục
+
+O8_ROLE
+    O8 là strict renderer/output selective thuộc layer O cho BỆNH ÁN CHI TIẾT.
+    O8 chỉ tạo O8_OUTPUT / rendered text khi được G_STATE plan và đã đến lượt; O8_OUTPUT không phải state nguồn, không là source cho A/C/O khác và không được reuse như nguồn lâm sàng.
+    O8 chỉ render từ current allowed state theo mapping O8, không tạo dữ liệu mới, không sửa A/C/G/O và không tự chạy A, A_GATE, C, C_GATE hoặc O khác.
+    O8 không phải A module, C module, O2 tóm tắt bệnh án, O3 tổng kết/ra viện, O4 bệnh trình, O5/O6 thuốc/đơn thuốc, O7 biên bản hội chẩn, O9 hỏi thêm/khám thêm/xét nghiệm cần làm hoặc O10/O11/O12/O13.
+    O8 không tạo O8_STATE, O8_REV, O8_FINAL, O8_SOURCE_REV, lifecycle state riêng hoặc schema state mới.
+
+O8_ALLOWED_SOURCE
+    O8 chỉ được đọc các nguồn sau:
+        1. G_STATE của ROUND hiện tại: chỉ kiểm O8 có trong O_RENDER_LIST/O_RENDER_ORDER, đã đến lượt render và metadata điều phối cần thiết; không dùng làm nguồn dữ kiện bệnh án và không render metadata G_STATE.
+        2. A_GATE mới nhất: chỉ kiểm A_GATE_STATUS = PASS và full current A_STATE hợp lệ; không render A_GATE và không dùng A_GATE làm dữ kiện bệnh án.
+        3. Full current A_STATE mới nhất: chỉ truy cập field được mapping rõ trong O8_ALLOWED_SOURCE; không dùng A_STATE ngoài mapping O8 để tự dựng bệnh án.
+        4. A1_STATE.A1_REASON: nguồn duy nhất cho mục 1 “Lý do vào viện”.
+        5. A2_STATE.A2_FINAL: nguồn duy nhất cho mục 2 “Tiền sử”.
+        6. A3_STATE.A3_FOR_O8: nguồn duy nhất cho mục 3 “Bệnh sử”.
+        7. A4_STATE.A4_FOR_O8: nguồn duy nhất cho dòng khám thứ 1; bắt buộc dùng đúng A4_FOR_O8 nếu field tồn tại/hợp lệ.
+        8. A5_STATE.A5_FOR_O8: nguồn duy nhất cho dòng khám thứ 2; bắt buộc dùng đúng A5_FOR_O8.
+        9. A6_STATE.A6_FOR_O8: nguồn duy nhất cho dòng khám thứ 3; bắt buộc dùng đúng A6_FOR_O8.
+        10. A7_STATE.A7_FOR_O8: nguồn duy nhất cho dòng khám thứ 4; bắt buộc dùng đúng A7_FOR_O8.
+        11. A8_STATE.A8_FOR_O8: nguồn duy nhất cho dòng khám thứ 5; bắt buộc dùng đúng A8_FOR_O8.
+        12. A9_STATE.A9_FOR_O8: nguồn duy nhất cho dòng khám thứ 6; bắt buộc dùng đúng A9_FOR_O8.
+        13. A10_STATE.A10_FOR_O8 chỉ khi A10_STATE.A10_HAS_DATA = YES; nếu A10_HAS_DATA = NO thì không render dòng cơ xương khớp, không tự tạo dòng cơ xương khớp và không dùng nguồn khác để bù.
+        14. A11_STATE.A11_FOR_O8 chỉ khi A11_STATE.A11_HAS_EXTRA = YES; nếu có nhiều dòng thì render đúng từng dòng, không tự gộp, không tự tách và không tự thêm.
+        15. A11_STATE.A11_OTHER_SYSTEMS: nguồn duy nhất và bắt buộc cho dòng cuối mục Khám; giá trị đúng từ A11 là “Khám sơ bộ chưa phát hiện bất thường”; render đúng nội dung này và không thêm nhãn “Các cơ quan khác”.
+        16. A13_STATE.A13_LABS và A13_STATE.A13_IMAGING trong full current A_STATE sau A_GATE_STATUS = PASS: chỉ dùng toàn bộ hai field canonical này, theo thứ tự A13_LABS trước A13_IMAGING, để tạo đúng một bullet “Hoàn thành các xét nghiệm thường qui.” ở cuối mục 4 “Khám” theo mapping O8; không dùng cho vị trí/output khác.
+        17. A13_STATE.A13_TREATMENT: nguồn duy nhất cho mục 5 “Điều trị”.
+    O8 không được đọc/dùng raw user input để tự viết dữ kiện lâm sàng mới, hidden memory/trí nhớ ẩn, web/guideline/source ngoài, O_OUTPUT cũ, O8_OUTPUT cũ, rendered output cũ, patch/delta, A_STATE patch/delta, C_STATE patch/delta, A_STATE ngoài mapping O8, C_STATE, Cx_STATE, C1-C7, A12 để thêm chẩn đoán, A13_LABS/A13_IMAGING ngoài đúng bullet mới ở mục 4, A13_LABS/A13_IMAGING làm điều trị hoặc kết quả cận lâm sàng đã có, A13 metadata/revision/source revision/check/error, A14 nếu không nằm trong mapping hiện hành, A15 thuốc/đơn thuốc, O1-O7 output, O9-O13 output, bản khám đã chốt rộng hơn, bản khám chi tiết hơn hoặc bất kỳ bản khám nào khác để bù FOR_O8.
+
+O8_ALLOWED_ACTION
+    RUN/render khi đồng thời: O8 nằm trong G_STATE.O_RENDER_LIST hoặc G_STATE.O_RENDER_ORDER; đã đến lượt theo G_STATE.O_RENDER_ORDER; A_GATE_STATUS = PASS; full current A_STATE hợp lệ; đủ nguồn bắt buộc để render 5 mục lớn; có A1/A2/A3/A13 hợp lệ; có FOR_O8 A4-A9 hợp lệ; A10/A11 xử lý đúng theo điều kiện; source A đã qua no-data guard O8; output đúng schema O8.
+    SKIP khi O8 không nằm trong render plan hoặc chưa đến lượt render; khi SKIP không output, không tạo/cập nhật O8_OUTPUT, không in “O8_OUTPUT = SKIP” và không tự thêm O8 vào render plan.
+    BLOCKED/NEEDS_FIX khi O8 được yêu cầu render nhưng thiếu điều kiện RUN, A_GATE_STATUS != PASS, thiếu full current A_STATE hợp lệ, thiếu/sai nguồn bắt buộc A1/A2/A3/A4-A9/A10/A11/A13, dữ liệu chưa chốt, source mâu thuẫn/sai format, no-data leak, FOR_O8 thiếu/sai/no-data nhưng có bản khám rộng hơn/chi tiết hơn, dùng nguồn cấm, output sai schema 1 text code block / 5 mục hoặc output chứa dữ kiện do O8 tự bịa.
+    Khi BLOCKED/NEEDS_FIX, O8 không render bản bệnh án hoàn chỉnh, không tự bịa, không tự sửa A, không tự chạy A, không tự chạy A_GATE, không tự chạy C, không tự gọi O khác, không tự thêm O8 vào render plan, không tự sửa G_STATE, không dùng raw input/hidden memory/output cũ/C, không fallback bản khám rộng hơn hoặc chi tiết hơn, và yêu cầu quay lại module A tương ứng nếu cần sửa nguồn.
+
+O8_ALLOWED_WRITE
+    O8 chỉ được ghi/render O8 rendered text / O8_OUTPUT nếu hệ thống vận hành dùng field này, O8_RENDER_CHECK nếu framework nội bộ dùng, và lý do BLOCKED/NEEDS_FIX nếu framework yêu cầu.
+    O8_RENDER_CHECK là metadata kỹ thuật và không render vào bệnh án.
+    O8 không được ghi/tạo/sửa O8_STATE, O8_REV, O8_FINAL, O8_ERROR field riêng nếu contract hiện tại không định nghĩa, G_STATE, A_STATE, C_STATE, O module khác, A module khác, C module khác hoặc S/G.
+    Không dùng O8 output làm source cho module khác nếu contract khác không nêu rõ.
+
+O8_RENDER_SCHEMA
+    Toàn bộ nội dung O8 thật cho bác sĩ phải nằm trong đúng một text code block duy nhất; không tách O8 thành nhiều text code block, không đặt từng mục 1-5 vào từng text code block riêng và không xuất thêm giải thích ngoài text code block nếu user chỉ yêu cầu bệnh án chi tiết.
+    O8 output chỉ có đúng 5 mục lớn theo đúng thứ tự: 1. Lý do vào viện; 2. Tiền sử; 3. Bệnh sử; 4. Khám; 5. Điều trị.
+    Schema nội dung bên trong text code block:
+        1. Lý do vào viện: [A1_STATE.A1_REASON].
+        2. Tiền sử: [A2_STATE.A2_FINAL].
+        3. Bệnh sử: [A3_STATE.A3_FOR_O8].
+        4. Khám:
+        - [A4_STATE.A4_FOR_O8]
+        - [A5_STATE.A5_FOR_O8]
+        - [A6_STATE.A6_FOR_O8]
+        - [A7_STATE.A7_FOR_O8]
+        - [A8_STATE.A8_FOR_O8]
+        - [A9_STATE.A9_FOR_O8]
+        - [A10_STATE.A10_FOR_O8 nếu A10_HAS_DATA = YES]
+        - [từng dòng A11_STATE.A11_FOR_O8 nếu A11_HAS_EXTRA = YES]
+        - [A11_STATE.A11_OTHER_SYSTEMS]
+        - Hoàn thành các xét nghiệm thường qui.[suffix một dòng được map từ toàn bộ A13_STATE.A13_LABS rồi toàn bộ A13_STATE.A13_IMAGING theo O8_LOGIC_RULES; luôn render câu cố định, không render suffix của field có exact no-content literal]
+        5. Điều trị: [A13_STATE.A13_TREATMENT].
+    Khi xuất thật, không in placeholder, tên biến, dòng giải thích, metadata, nhãn cơ quan, A4_STATE/A5_STATE/tên state khác, FOR_O8 hoặc check/error/rev/state.
+    Mục Khám dùng bullet, không nhãn cơ quan, đúng thứ tự A4 → A5 → A6 → A7 → A8 → A9 → A10 nếu có → A11 nếu có → A11_OTHER_SYSTEMS → đúng một bullet xét nghiệm/cận lâm sàng mới; ngoài bullet mới được schema quy định, không tự gộp/tách/thêm, không fallback bản khám rộng hơn và không đổi “âm tính/dương tính” nếu nguồn hợp lệ dùng chữ đó. Bullet mới vẫn thuộc mục 4, luôn xuất hiện trong mọi O8 render thành công, nằm ngay sau A11_OTHER_SYSTEMS và ngay trước mục 5; không tạo mục lớn thứ sáu hoặc heading/nhãn Cận lâm sàng, Xét nghiệm, Chẩn đoán hình ảnh, Các cận lâm sàng dự kiến hay Các cận lâm sàng cần làm dự kiến.
+    O8 không thêm mục Hành chính, Chẩn đoán, Cận lâm sàng, Thuốc, Đơn thuốc, Tiên lượng, Ra viện, Tái khám, Chữ ký, Họ tên hoặc Chức danh.
+
+O8_LOGIC_RULES
+    O8 giữ nguyên nội dung lâm sàng từ các field A/FOR_O8 theo đúng vị trí mapping; O8 chỉ được áp dụng O_PRESENTATION_NORMALIZATION khi render trình bày. O8 không tự thêm dữ kiện, tự bớt dữ kiện, tự sửa chính tả, từ ngữ, thuật ngữ, ngày tháng, số liệu, đơn vị hoặc nội dung lâm sàng, không tự chỉnh sửa FOR_O8 ngoài O_PRESENTATION_NORMALIZATION, không tự chuẩn hóa lại A, không tự đánh giá chất lượng lâm sàng từng cơ quan, không tự enrich vì chữ “Bệnh án chi tiết”, không tự tạo lý do vào viện, tiền sử, bệnh sử, khám, điều trị, hành chính, chẩn đoán, cận lâm sàng, thuốc/đơn thuốc, ra viện/tái khám/chữ ký.
+    FOR_O8-only: nếu A4-A10 có field FOR_O8, O8 phải dùng đúng FOR_O8; không dùng bản khám rộng hơn, bản khám chi tiết hơn hoặc summary khác để bù FOR_O8; không tự làm sạch nguồn ngoài allowlist O_PRESENTATION_NORMALIZATION nếu FOR_O8 chưa sạch; nếu FOR_O8 thiếu/sai/no-data hoặc cần sửa ngoài allowlist presentation thì O8 NEEDS_FIX/BLOCKED và route về module A tương ứng.
+    A10 chỉ render khi A10_HAS_DATA = YES; nếu A10_HAS_DATA = NO thì bỏ dòng A10 và không thêm dòng thay thế.
+    A11: nếu A11_HAS_EXTRA = YES thì render từng dòng A11_FOR_O8; không gộp/tách các dòng A11; luôn render dòng cuối từ A11_OTHER_SYSTEMS và không thêm nhãn “Các cơ quan khác”.
+    A13 — mapping bullet xét nghiệm/cận lâm sàng:
+        1. Câu cố định luôn render đúng nguyên văn “Hoàn thành các xét nghiệm thường qui.”; không đổi `qui` thành `quy`.
+        2. So sánh exact toàn field: LABS_NO_CONTENT là “Không có xét nghiệm cần làm.” và IMAGING_NO_CONTENT là “Không có chẩn đoán hình ảnh cần làm.”. Loại exact literal tương ứng khỏi suffix là deterministic state-to-output mapping, không phải semantic filtering; không dùng case-insensitive/fuzzy/substring/synonym matching.
+        3. Nếu cả hai field bằng exact no-content literal, output đúng “- Hoàn thành các xét nghiệm thường qui.”. Nếu chỉ A13_LABS có nội dung thật, nối toàn bộ A13_LABS. Nếu chỉ A13_IMAGING có nội dung thật, nối toàn bộ A13_IMAGING. Nếu cả hai có nội dung thật, nối toàn bộ A13_LABS trước rồi toàn bộ A13_IMAGING; không tạo separator cho field bị map bỏ.
+        4. Mỗi field có nội dung thật là một opaque clinical segment: giữ toàn bộ token, wording, punctuation nội bộ và thứ tự nội dung; không chọn subset, không loại phần xét nghiệm thường quy, không đánh giá lại relevance, không phân loại lại A13_IMAGING, không semantic summarize/deduplicate, không paraphrase, không đổi modality/vị trí/bên và không thêm/bớt dữ kiện.
+        5. One-line builder chỉ thao tác rendered copy: trim whitespace đầu/cuối segment; collapse mỗi line break cùng whitespace giáp ranh thành đúng một ASCII space; nếu ký tự cuối không phải whitespace là `.`, `?` hoặc `!` thì giữ nguyên và không thêm dấu, nếu không thì thêm đúng một dấu chấm; ghép các nonempty segment bằng đúng một ASCII space. Không thêm dấu phẩy, chấm phẩy, hai chấm, gạch chéo, nhãn hoặc bullet phụ; không tạo `..`, dính từ, trailing whitespace hoặc nhiều physical line.
+        6. Bullet mới không đọc A13_TREATMENT, A13 metadata/revision/source revision/check/error, A14, A15, raw user input, hidden memory, web/guideline hoặc dữ liệu ngoài allowlist; không tự tạo nội dung lâm sàng.
+    A13 — mục Điều trị: chỉ lấy từ A13_TREATMENT; không dùng A13_LABS, A13_IMAGING hoặc A15 làm điều trị và không tự viết phác đồ/đơn thuốc.
+
+O8_SPECIAL_RULES
+    No-data guard: O8 phải kiểm mọi source A dùng cho output thường quy; nếu source chứa no-data leak thì không render bệnh án hoàn chỉnh, O8_RENDER_CHECK = NEEDS_FIX hoặc BLOCKED theo framework và nêu module/field A cần sửa.
+    No-data leak gồm các kiểu “Không có dữ kiện”, “Chưa rõ”, “Chưa khai thác”, “Không ghi nhận”, “NONE”, “NULL”, “NOT_APPLICABLE”, placeholder, output rỗng, đoạn báo thiếu dữ kiện, giá trị chưa đủ để copy vào bệnh án chi tiết thường quy và các biến thể viết hoa/thường/dấu câu của các cụm no-data trong source A hiện hành.
+    No-data guard áp dụng tối thiểu cho A1_REASON, A2_FINAL, A3_FOR_O8, A4_FOR_O8, A5_FOR_O8, A6_FOR_O8, A7_FOR_O8, A8_FOR_O8, A9_FOR_O8, A10_FOR_O8 nếu A10_HAS_DATA = YES, A11_FOR_O8 nếu A11_HAS_EXTRA = YES, A11_OTHER_SYSTEMS, A13_LABS, A13_IMAGING và A13_TREATMENT. Riêng exact canonical A13_LABS = “Không có xét nghiệm cần làm.” và A13_IMAGING = “Không có chẩn đoán hình ảnh cần làm.” được map bỏ khỏi suffix theo O8_LOGIC_RULES, không phải no-data leak. Missing field, null, blank, whitespace-only, arbitrary sentinel, noncanonical no-data wording, malformed field, stale/invalid A13_STATE hoặc A13_CHECK khác PASS vẫn là invalid source; O8 NEEDS_FIX/BLOCKED, không render complete O8 hoặc partial fixed bullet và không tự sửa A13.
+    Boundary với A12: O8 không đọc A12 để thêm chẩn đoán, không thêm mục Chẩn đoán và không tạo/sửa chẩn đoán.
+    Boundary với A13: O8 chỉ dùng toàn bộ A13_LABS rồi toàn bộ A13_IMAGING cho đúng bullet mới trong mục 4 theo exact no-content mapping và one-line builder; không chọn/lọc/đánh giá lại nội dung. O8 chỉ dùng A13_TREATMENT cho mục Điều trị; không dùng A13_LABS/A13_IMAGING làm điều trị hoặc kết quả đã có và không dùng A13_TREATMENT trong bullet mới.
+    Boundary với A14: O8 không đọc A14 nếu contract hiện tại không mapping A14; không dùng A14 để thêm cận lâm sàng, hành chính hoặc ra viện.
+    Boundary với A15: O8 không đọc A15 và không thêm thuốc/đơn thuốc.
+    Boundary với C: O8 không đọc C_STATE, Cx_STATE hoặc C1-C7, không tạo dependency C và không dùng C4/C5/C6/C7 để bù nội dung.
+    Boundary với O: O8 không đọc output O cũ, O8_OUTPUT cũ, rendered output cũ, O1-O7 output hoặc O9-O13 output; không thay O2 tóm tắt bệnh án, O3 tổng kết/ra viện, O4 bệnh trình, O7 biên bản hội chẩn hoặc O9/O10/O11/O12/O13.
+    Metadata không render: O8_RENDER_CHECK, O8_ERROR nếu framework có, STATE_VERSION, ROUND_ID, RUN_MODE, A/C/O REV, A_CHECK/C_CHECK/O_CHECK, CREATE/UPDATE/REUSE, A_MODULE_REV/C_MODULE_REV, output cũ hoặc debug text.
+
+O8_CHECK_PASS_IF
+    PASS khi: O8 nằm trong G_STATE.O_RENDER_LIST/O_RENDER_ORDER; đã đến lượt render; A_GATE_STATUS = PASS; full current A_STATE hợp lệ; chỉ dùng source allowlist; không dùng raw input để tạo dữ kiện mới; không dùng hidden memory, web/guideline, C hoặc O output cũ/rendered output cũ; đủ A1/A2/A3/A4-A9/A13, trong đó A13_LABS, A13_IMAGING và A13_TREATMENT đều có mặt/hợp lệ và A13_CHECK = PASS; A10 xử lý đúng theo A10_HAS_DATA; A11 xử lý đúng theo A11_HAS_EXTRA; A11_OTHER_SYSTEMS có mặt và được render đúng vị trí; no-data guard PASS theo ngoại lệ exact canonical A13 no-content; mục Khám dùng đúng FOR_O8 và đúng thứ tự; ngay sau A11_OTHER_SYSTEMS có đúng một bullet, một physical line bắt đầu exact “- Hoàn thành các xét nghiệm thường qui.”, đúng four-case mapping, LABS trước IMAGING, giữ toàn bộ eligible content, đúng one-line builder, không leak no-content literal/forbidden source/content và ngay sau bullet là mục 5; không fallback bản khám rộng hơn/chi tiết hơn; output đúng một text code block và đúng 5 mục lớn; không thêm mục thứ 6 hoặc Hành chính/Chẩn đoán/Cận lâm sàng/Thuốc/Đơn thuốc/chữ ký; không render metadata; nếu O8_RENDER_CHECK = PASS thì không có lỗi nội bộ còn mở.
+
+O8_NEEDS_FIX_IF
+    NEEDS_FIX/BLOCKED khi: O8 được plan nhưng thiếu điều kiện RUN; O8 chưa đến lượt render; A_GATE_STATUS != PASS; full current A_STATE không hợp lệ; A13_CHECK khác PASS hoặc A13_STATE stale/invalid; thiếu A1_REASON, A2_FINAL, A3_FOR_O8, A4_FOR_O8, A5_FOR_O8, A6_FOR_O8, A7_FOR_O8, A8_FOR_O8, A9_FOR_O8, A13_LABS, A13_IMAGING hoặc A13_TREATMENT; A13_LABS/A13_IMAGING null, blank, whitespace-only, arbitrary sentinel, noncanonical no-data, malformed hoặc không render-ready; A10_HAS_DATA = YES nhưng thiếu/sai A10_FOR_O8; A11_HAS_EXTRA = YES nhưng thiếu/sai A11_FOR_O8; thiếu/sai A11_OTHER_SYSTEMS; source có no-data leak, mâu thuẫn hoặc sai format; fixed sentence thiếu/sai hoặc dùng `thường quy`; canonical no-content literal bị render; bullet mới sai four-case mapping, sai thứ tự, mất/thêm nội dung, chọn subset, đánh giá lại relevance, semantic deduplicate, paraphrase, reclassify hoặc đổi modality/vị trí/bên; bullet mới lấy A13_TREATMENT/metadata/A14/A15/raw input/nguồn cấm, có separator/dấu câu sai, `..`, dính từ, trailing whitespace, hai/nhiều bullet, nhiều physical line, sai vị trí hoặc tạo section/heading/nhãn mới; source invalid nhưng vẫn render complete O8 hoặc partial fixed bullet; dùng source ngoài allowlist; dùng C_STATE/Cx_STATE/C1-C7; dùng O output cũ/rendered output cũ; dùng raw input/hidden memory/web để bù dữ kiện; dùng A12 để thêm chẩn đoán; dùng A13_LABS/A13_IMAGING làm điều trị hoặc kết quả đã có; dùng A14 ngoài mapping; dùng A15 thuốc/đơn thuốc; dùng bản khám rộng hơn/chi tiết hơn để bù FOR_O8; output sai schema 1 text code block/5 mục; mục Khám có nhãn cơ quan; tự bịa/tự sửa/tự chạy A/C/O; render metadata kỹ thuật.
+
+O8_ERROR_RULE
+    Khi NEEDS_FIX/BLOCKED, O8 không render bệnh án hoàn chỉnh, không tự bịa dữ kiện, không tự sửa A, không tự chạy A, không tự chạy C, không tự gọi O khác và không fallback sang output cũ/raw input/hidden memory/web/C/bản khám rộng hơn.
+    Nếu framework cần lỗi/check nội bộ, ghi lý do theo framework nhưng không render lỗi/check metadata vào bệnh án.
+    Lỗi phải nêu module/field cần sửa, ví dụ A1_REASON, A2_FINAL, A3_FOR_O8, A4_FOR_O8, A5_FOR_O8, A6_FOR_O8, A7_FOR_O8, A8_FOR_O8, A9_FOR_O8, A10_FOR_O8, A11_FOR_O8, A11_OTHER_SYSTEMS, A13_LABS, A13_IMAGING, A13_TREATMENT, G render plan hoặc A_GATE/full current A_STATE. Nếu lỗi thuộc A13_LABS/A13_IMAGING thì route về đúng field A13 upstream; O8 không tự sửa, thay, bù hoặc hợp thức hóa source.
+
+O8_REUSE_RULE
+    O8 không có lifecycle CREATE/UPDATE/REUSE state riêng theo contract hiện tại.
+    Không reuse rendered output cũ, O_OUTPUT cũ hoặc O8_OUTPUT cũ.
+    Khi G plan O8, render từ current allowed state của ROUND hiện tại.
+    Nếu hệ thống có REUSE nội bộ, REUSE chỉ là metadata điều phối, không làm nguồn nội dung và không render thường quy.
+    Không ghi “reuse O8”, không tạo O8_REV và không tạo O8_STATE.
+
+O8_END
+    Sau O8, hệ thống render O tiếp theo theo G_STATE.O_RENDER_ORDER; O8 không tự chạy O9, không gọi A/C, không sửa state và không sửa O khác.
+
+<<< END O8
+O9 — HỎI THÊM / KHÁM THÊM / XÉT NGHIỆM CẦN LÀM
+Version: BA S-G-A-C-O v4
+Update: 28/06/2026 GMT+7 — compact allowlist renderer C1
+
+O9_ROLE
+    O9 là renderer/output module thuộc layer O cho “HỎI THÊM / KHÁM THÊM / XÉT NGHIỆM CẦN LÀM”.
+    O9 là renderer của C1 và chỉ trình bày nội dung đã được C1 tạo/chốt.
+    O9 không tự xác định hoặc tự tạo câu hỏi cần hỏi thêm, khám thêm, xét nghiệm/cận lâm sàng/hình ảnh/thăm dò cần làm, đánh giá lại/theo dõi lại, mức ưu tiên, chẩn đoán, hướng điều trị, chỉ định, thuốc/đơn thuốc, cảnh báo, chẩn đoán phân biệt hoặc tra cứu nguồn.
+    O9 không phải C1, A13, O10, O11, O12 hoặc O13.
+    O9 output nếu có không phải state nguồn, không là source cho A/C/O khác và không được reuse như nguồn lâm sàng.
+
+O9_ALLOWED_SOURCE
+    O9 chỉ được đọc:
+        1. G_STATE ROUND hiện tại: chỉ để kiểm O9 nằm trong O_RENDER_LIST/O_RENDER_ORDER, đã đến lượt render và metadata điều phối cần thiết; không dùng G_STATE làm nguồn tạo câu hỏi/khám/xét nghiệm và không render metadata G_STATE.
+        2. C_GATE mới nhất nếu hệ thống có: chỉ để kiểm C1_STATE hợp lệ; không render C_GATE.
+        3. C1_STATE: nguồn chính và bắt buộc của O9.
+        4. C1_CHECK: phải = PASS để O9 render.
+        5. C1_FINAL: nguồn tổng hợp cuối nếu C1 đã chốt.
+        6. C1_QUESTIONS nếu có: nguồn cho mục “1. Cần hỏi thêm:”.
+        7. C1_EXAM_TO_ADD nếu có: nguồn cho mục “2. Cần khám thêm:”.
+        8. C1_TESTS_TO_DO nếu có: nguồn cho mục “3. Cận lâm sàng / thăm dò cần làm:”.
+        9. C1_REASSESSMENT_POINTS nếu có: nguồn cho mục “4. Cần đánh giá lại / theo dõi lại:”.
+        10. C1_ERROR: chỉ dùng làm lý do chặn khi BLOCKED/NEEDS_FIX nếu hệ thống yêu cầu; không render C1_ERROR trong output thường quy khi C1_CHECK = PASS.
+    O9 không được đọc/dùng A_STATE/A_GATE/A1-A15 ngoài nội dung đã được C1 đưa vào C1_STATE/C1_FINAL; không dùng A13/A13_LABS/A13_IMAGING/A13_TREATMENT thay C1 hoặc tự tạo xét nghiệm/hình ảnh/hướng xử trí; không dùng A14 kết quả đã có làm mục cần làm; không dùng A15 thuốc/đơn thuốc.
+    O9 không được đọc/dùng C2_STATE, C3_STATE, C4_STATE, C5_STATE, C6_STATE, C7_STATE, generic C_STATE hoặc Cx_STATE ngoài C1 để bù nội dung.
+    O9 không được đọc/dùng O_OUTPUT cũ, O9_OUTPUT cũ, rendered output cũ, O1-O8 output, O10-O13 output, raw user input, hidden memory, web/guideline/source ngoài, patch/delta hoặc metadata RUN_MODE/REV làm nguồn nội dung.
+    Nếu cần bối cảnh A hoặc nội dung từ A13/C2-C6, bối cảnh đó phải được C1 xử lý trước và nằm trong C1_STATE/C1_FINAL.
+    O9 không tự gọi hoặc tự chạy C1.
+
+O9_ALLOWED_ACTION
+    O9 RUN/render khi đồng thời: O9 nằm trong G_STATE.O_RENDER_LIST hoặc G_STATE.O_RENDER_ORDER; đã đến lượt theo G_STATE.O_RENDER_ORDER; C1_STATE tồn tại; C1_CHECK = PASS; C1_FINAL hoặc các field C1 tương ứng có nội dung/schema hợp lệ; output đúng schema O9; chỉ dùng source allowlist.
+    O9 SKIP khi O9 không nằm trong render plan hoặc chưa đến lượt render.
+    Khi SKIP: không render O9, không tạo/cập nhật O9_OUTPUT, không in “O9_OUTPUT = SKIP” và không tự thêm O9 vào render plan.
+    O9 BLOCKED/NEEDS_FIX khi O9 được yêu cầu render nhưng thiếu điều kiện RUN, thiếu C1_STATE, C1_CHECK != PASS, C1_CHECK = NEEDS_FIX, C1_FINAL thiếu/sai schema, field C1 thiếu/sai schema khi cần, C1 chưa tạo nội dung nhưng O9 được yêu cầu, C1_STATE mâu thuẫn/không phù hợp format O9, dùng nguồn cấm, output sai schema hoặc O9 cố tự tạo/bù nội dung.
+    Khi BLOCKED/NEEDS_FIX: không render bản O9 hoàn chỉnh, không tự tạo nội dung mới, không tự sửa/chạy C1, không tự chạy A/C/O, không tự gọi O khác, không tự sửa A/C/G/O, không fallback sang A/A13/C2-C6/O output cũ/raw/hidden/web và chỉ ghi lý do chặn nếu hệ thống yêu cầu.
+
+O9_ALLOWED_WRITE
+    O9 chỉ được ghi/render output thường quy của chính O9 theo schema, O9_OUTPUT nếu framework vận hành dùng field này, O9_RENDER_CHECK nếu framework nội bộ dùng và lý do BLOCKED/NEEDS_FIX nếu framework yêu cầu.
+    O9_RENDER_CHECK là metadata kỹ thuật nếu còn dùng; không render O9_RENDER_CHECK vào output thường quy.
+    O9 không được ghi/tạo/sửa O9_STATE, O9_REV, O9_FINAL, O9_ERROR field riêng nếu contract hiện tại không định nghĩa, G_STATE, O_RENDER_LIST, O_RENDER_ORDER, A_STATE, C_STATE, C1_STATE, C2-C7, O module khác hoặc S/G.
+    Không tạo/cập nhật O9_OUTPUT khi SKIP.
+    Không dùng O9 output làm source cho module khác nếu contract khác không nêu rõ.
+
+O9_RENDER_SCHEMA
+    O9 render thành block riêng theo contract O hiện tại; O9 không bắt buộc code block text riêng và không thêm code block riêng nếu contract O9 không yêu cầu.
+    Heading literal chuẩn:
+        HỎI THÊM / KHÁM THÊM / CẬN LÂM SÀNG CẦN LÀM
+    Thứ tự mục chuẩn:
+        1. Cần hỏi thêm:
+        2. Cần khám thêm:
+        3. Cận lâm sàng / thăm dò cần làm:
+        4. Cần đánh giá lại / theo dõi lại:
+        5. Ghi chú giới hạn dữ kiện:
+    Mapping:
+        - “Cần hỏi thêm” lấy từ C1_QUESTIONS hoặc phần tương ứng trong C1_FINAL.
+        - “Cần khám thêm” lấy từ C1_EXAM_TO_ADD hoặc phần tương ứng trong C1_FINAL.
+        - “Cận lâm sàng / thăm dò cần làm” lấy từ C1_TESTS_TO_DO hoặc phần tương ứng trong C1_FINAL.
+        - “Cần đánh giá lại / theo dõi lại” lấy từ C1_REASSESSMENT_POINTS hoặc phần tương ứng trong C1_FINAL.
+        - “Ghi chú giới hạn dữ kiện” lấy từ C1_FINAL nếu C1 có ghi giới hạn/lý do cần bổ sung.
+        - “Mức ưu tiên” chỉ lấy từ C1 nếu có field rõ; không tự thêm.
+    Nếu C1 không có nội dung cho một mục, O9 không tự thêm mục/nội dung mới từ A/A13/C2-C6/O output và chỉ render theo schema/no-data behavior hiện hành từ C1.
+    Nếu C1 ghi không cần bổ sung, O9 render đúng câu C1 đã chốt, ví dụ “Không có nội dung cần bổ sung nổi bật từ C1” hoặc câu tương ứng từ C1; không tự thêm câu hỏi/khám/xét nghiệm.
+    Khi xuất thật: không in placeholder, tên biến, nhãn kỹ thuật như C1_STATE/C1_FINAL/O9_OUTPUT, metadata, check/error/rev/state hoặc debug text.
+
+O9_LOGIC_RULES
+    O9 phải giữ nguyên nội dung lâm sàng/source semantic từ C1_STATE/C1_FINAL; O9 chỉ được áp dụng O_PRESENTATION_NORMALIZATION khi render trình bày. Cụm “render nguyên nội dung C1” hoặc “render đúng câu C1 đã chốt” không có nghĩa byte-level exact-copy và không cấm 6 thao tác presentation allowlist.
+    O9 render nguyên nội dung C1 đúng vị trí theo mapping O9. O9 không sửa chính tả, từ ngữ, thuật ngữ, ngày tháng, số liệu, đơn vị hoặc nội dung lâm sàng; mọi lỗi ngoài allowlist presentation phải BLOCKED/NEEDS_FIX và route về C1/module nguồn A/C tương ứng.
+    O9 không tự tạo câu hỏi, khám thêm, xét nghiệm/thăm dò cần làm, đánh giá lại/theo dõi lại, mức ưu tiên, chẩn đoán, hướng xử trí, thuốc, cảnh báo hoặc chẩn đoán phân biệt.
+    O9 không tự thêm nội dung từ A13/C2-C6, không tự chuyển A13/C2/C3/C5/C6 thành C1/O9, không tự biến dữ kiện đã có thành “cần làm”, không tự biến kết quả A14 đã có thành xét nghiệm cần làm và không tự biến gợi ý thành y lệnh chính thức nếu C1 không chốt.
+    Nếu cần bổ sung nội dung mới, phải quay lại C1 theo điều phối hệ thống; O9 không tự chạy C1 và không tự sửa C1.
+
+O9_SPECIAL_RULES
+    Boundary với A: O9 không đọc A_STATE để tự tạo nội dung; không dùng A13/A13_LABS/A13_IMAGING/A13_TREATMENT để thay C1 hoặc tự tạo xét nghiệm/hình ảnh/hướng xử trí; không dùng A14 kết quả đã có để tự tạo mục cần làm; không dùng A15 thuốc/đơn thuốc; nếu bối cảnh A cần cho O9, bối cảnh đó phải nằm trong C1_STATE/C1_FINAL.
+    Boundary với C: O9 chỉ là renderer của C1; chỉ đọc C1_STATE/C1_CHECK/C1_FINAL/C1_* theo allowlist; không đọc C2/C3/C4/C5/C6/C7 để bù; không thay/sửa/chạy C1; không biến C2 cảnh báo lâm sàng, C3 cảnh báo thuốc, C5 chẩn đoán phân biệt hoặc C6 tra cứu nguồn thành O9.
+    Boundary với O: O9 không đọc O output cũ, O9_OUTPUT cũ, rendered output cũ, O1-O8 output hoặc O10-O13 output; không thay O10 cảnh báo lâm sàng, O11 cảnh báo thuốc, O12 tra cứu nguồn hoặc O13 chẩn đoán phân biệt; không tự gọi O10/O11/O12/O13.
+    Metadata: không render metadata kỹ thuật, gồm O9_RENDER_CHECK, O9_ERROR nếu framework có, C1_CHECK, C1_ERROR trong output thường quy khi C1_CHECK PASS, STATE_VERSION, ROUND_ID, RUN_MODE, A/C/O REV, A_CHECK/C_CHECK/O_CHECK, CREATE/UPDATE/REUSE, A_MODULE_REV/C_MODULE_REV, output cũ hoặc debug text.
+    No-data/no-content: nếu C1 ghi không cần bổ sung, O9 render đúng câu C1 đã chốt; nếu C1 chưa tạo nội dung nhưng O9 được yêu cầu, O9 NEEDS_FIX/BLOCKED; không tự bù nội dung từ nguồn khác.
+
+O9_CHECK_PASS_IF
+    PASS khi tất cả đúng:
+        1. O9 nằm trong G_STATE.O_RENDER_LIST/O_RENDER_ORDER và đã đến lượt render.
+        2. C1_STATE tồn tại.
+        3. C1_CHECK = PASS.
+        4. C1_FINAL hoặc các field C1 tương ứng có nội dung/schema hợp lệ.
+        5. Chỉ dùng source allowlist; không dùng A_STATE/A13, C2-C7, O output cũ/rendered output cũ, raw input/hidden memory/web hoặc patch/delta để tự tạo/bù.
+        6. Output đúng heading/schema O9; các mục render đúng từ C1; không tự thêm mục/nội dung ngoài C1; không render metadata.
+        7. Nếu C1 ghi không cần bổ sung thì O9 render đúng câu C1 đã chốt.
+        8. Nếu O9_RENDER_CHECK = PASS thì không có lỗi nội bộ còn mở.
+
+O9_NEEDS_FIX_IF
+    NEEDS_FIX/BLOCKED khi có bất kỳ điều kiện nào: O9 được plan nhưng thiếu điều kiện RUN; O9 chưa đến lượt render; thiếu C1_STATE; C1_CHECK != PASS hoặc C1_CHECK = NEEDS_FIX; C1_FINAL thiếu/sai schema; C1_QUESTIONS/C1_EXAM_TO_ADD/C1_TESTS_TO_DO/C1_REASSESSMENT_POINTS thiếu/sai schema khi cần; C1 chưa tạo nội dung nhưng O9 được yêu cầu; C1_STATE mâu thuẫn hoặc không phù hợp format O9; dùng source ngoài allowlist; dùng A_STATE/A13/A14/A15 để tự tạo/bù; dùng C2-C7 để bù; dùng O output cũ/rendered output cũ; dùng raw input/hidden memory/web; dùng patch/delta; output sai schema; O9 tự tạo/bù câu hỏi/khám/xét nghiệm/đánh giá lại/mức ưu tiên; O9 render metadata kỹ thuật.
+
+O9_ERROR_RULE
+    Khi NEEDS_FIX/BLOCKED: không render bản O9 hoàn chỉnh, không tự tạo nội dung, không tự sửa/chạy C1, không tự chạy A/C/O và không fallback sang A/A13/C2-C6/O output cũ/raw/hidden/web.
+    Nếu framework cần lỗi/check nội bộ: ghi lý do chặn theo framework, có thể dùng C1_ERROR làm lý do chặn và không render lỗi/check metadata vào output thường quy.
+    Lý do chặn phải nêu rõ nguyên nhân, ví dụ O9 không nằm render plan, thiếu C1_STATE, C1_CHECK không PASS, C1_FINAL hoặc field C1 thiếu/sai schema, C1_STATE mâu thuẫn, dùng nguồn cấm hoặc output sai schema.
+
+O9_REUSE_RULE
+    O9 không có lifecycle CREATE/UPDATE/REUSE state riêng theo contract hiện tại.
+    Không reuse O output cũ, O9_OUTPUT cũ hoặc rendered output cũ.
+    Khi G plan O9, render từ current allowed sources của ROUND hiện tại.
+    Nếu hệ thống có REUSE nội bộ, REUSE chỉ là metadata điều phối, không làm nguồn nội dung và không render thường quy.
+    Không ghi “reuse O9”, không tạo O9_REV và không tạo O9_STATE.
+
+O9_END
+    Giữ marker kết thúc O9 bên dưới.
+    Sau O9, hệ thống render O tiếp theo theo G_STATE.O_RENDER_ORDER; O9 không tự chạy O10, không gọi A/C, không sửa state và không sửa O khác.
+
+<<< END O9
+
+####################################################################################################
+
+O10 — CẢNH BÁO LÂM SÀNG
+Version: BA S-G-A-C-O V4
+Update: 28/06/2026 GMT+7 — compact allowlist contract, giữ nguyên logic renderer C2
+
+O10_READ_LOCK
+    Khi audit, patch, final review hoặc render O10, phải đọc nguyên section từ header `O10 — CẢNH BÁO LÂM SÀNG` đến `<<< END O10`.
+    Không patch O10 chỉ từ diff/trích đoạn/ví dụ và không sửa O9/O11 hoặc section khác khi chỉ xử lý O10.
+
+O10_ROLE
+    O10 là strict renderer thuộc lớp O cho `CẢNH BÁO LÂM SÀNG`.
+    O10 là renderer của C2: chỉ trình bày cảnh báo lâm sàng, mức độ/nguy cơ, dấu hiệu nguy cơ, điểm cần theo dõi/đánh giá lại và khuyến nghị đã được C2 tạo/chốt.
+    O10 không tự xác định hoặc tự tạo cảnh báo lâm sàng, mức độ cảnh báo/nguy cơ, red flags, điểm theo dõi, khuyến nghị, hướng xử trí, chỉ định, xét nghiệm/cận lâm sàng, chẩn đoán, chẩn đoán phân biệt, cảnh báo thuốc hoặc tra cứu nguồn.
+    O10 không phải O9 hỏi thêm/khám thêm/xét nghiệm cần làm, O11 cảnh báo thuốc/an toàn thuốc, O12 tra cứu nguồn, O13 chẩn đoán phân biệt, A13 hướng xử trí/chỉ định hoặc C2 module tạo nội dung.
+    O10_OUTPUT nếu có chỉ là rendered output, không phải state nguồn, không là source cho A/C/O khác và không được reuse như nguồn lâm sàng.
+
+O10_ALLOWED_SOURCE
+    O10 chỉ được đọc các nguồn sau:
+        1. G_STATE của ROUND hiện tại: chỉ kiểm O10 có trong `O_RENDER_LIST`/`O_RENDER_ORDER`, đã đến lượt render chưa và metadata điều phối cần thiết; không dùng G_STATE làm nguồn tạo cảnh báo và không render metadata G_STATE.
+        2. C_GATE mới nhất nếu hệ thống có: chỉ kiểm C2_STATE hợp lệ; không render C_GATE và không dùng C_GATE để tạo cảnh báo.
+        3. C2_STATE: nguồn chính và bắt buộc của O10.
+        4. C2_CHECK: phải = PASS để O10 render.
+        5. C2_FINAL: nguồn tổng hợp cuối nếu C2 đã chốt.
+        6. C2_WARNINGS nếu có: nguồn cho mục `1. Cảnh báo lâm sàng:`.
+        7. C2_RISK_LEVEL nếu có: nguồn cho mục `2. Mức độ cảnh báo / nguy cơ:`; O10 không tự tạo mức độ nếu C2 không có.
+        8. C2_RED_FLAGS nếu có: nguồn cho mục `3. Dấu hiệu nguy cơ / dấu hiệu cần chú ý:`.
+        9. C2_MONITORING_POINTS nếu có: nguồn cho mục `4. Cần theo dõi / đánh giá lại:`.
+        10. C2_RECOMMENDATIONS nếu có: nguồn cho mục `5. Khuyến nghị đã được C2 chốt:`; không tự tạo hướng xử trí và không biến thành A13_TREATMENT.
+        11. C2_ERROR: chỉ dùng làm lý do chặn khi BLOCKED/NEEDS_FIX nếu hệ thống yêu cầu; không render C2_ERROR trong output thường quy khi C2_CHECK = PASS.
+    O10 không được đọc/dùng A_STATE/A_GATE để tự tạo cảnh báo; A12 để tạo chẩn đoán; A13/A13_LABS/A13_IMAGING/A13_TREATMENT để tự tạo khuyến nghị, hướng xử trí hoặc chỉ định; A14 để tự tạo cảnh báo; A15 thuốc/đơn thuốc/cảnh báo thuốc; C1_STATE; C3_STATE; C4_STATE; C5_STATE; C6_STATE; C7_STATE; generic C_STATE/Cx_STATE ngoài C2; O_OUTPUT cũ/O10_OUTPUT cũ/rendered output cũ; O1-O9 output; O11-O13 output; raw user input để tự tạo nội dung mới; hidden memory/trí nhớ ẩn; web/guideline/source ngoài; patch/delta; hoặc metadata RUN_MODE/REV làm nguồn nội dung.
+    Nếu cần cảnh báo mới hoặc sửa cảnh báo, phải quay lại C2 theo điều phối hệ thống; O10 không tự gọi hoặc tự chạy C2.
+
+O10_ALLOWED_ACTION
+    O10 RUN/render khi đồng thời: O10 nằm trong G_STATE.O_RENDER_LIST hoặc G_STATE.O_RENDER_ORDER; đã đến lượt theo G_STATE.O_RENDER_ORDER; C2_STATE tồn tại; C2_CHECK = PASS; C2_FINAL hoặc các field C2 tương ứng có nội dung/schema hợp lệ; output đúng schema O10; và chỉ dùng source allowlist.
+    O10 SKIP khi O10 không nằm trong render plan hoặc chưa đến lượt render; khi SKIP không render O10, không tạo/cập nhật O10_OUTPUT, không in `O10_OUTPUT = SKIP` và không tự thêm O10 vào render plan.
+    O10 BLOCKED/NEEDS_FIX khi O10 được yêu cầu render nhưng thiếu điều kiện RUN; thiếu C2_STATE; C2_CHECK != PASS hoặc C2_CHECK = NEEDS_FIX; C2_FINAL thiếu/sai schema; field C2 cần cho mục đang render thiếu/sai schema; C2 chưa tạo nội dung nhưng O10 được yêu cầu; C2_STATE mâu thuẫn hoặc không phù hợp format O10; dùng nguồn cấm; output sai schema; hoặc O10 cố tự tạo/bù cảnh báo, mức độ, khuyến nghị hay hướng xử trí.
+    Khi BLOCKED/NEEDS_FIX, O10 không render bản hoàn chỉnh, không tự tạo cảnh báo/mức độ/nguy cơ/khuyến nghị/hướng xử trí/chỉ định, không tự sửa hoặc chạy C2, không tự chạy A/C/O, không tự sửa A/C/G/O, không fallback sang A/A13/A15/C1/C3-C7/O output cũ/raw/hidden/web và chỉ ghi lý do chặn nếu hệ thống yêu cầu.
+
+O10_ALLOWED_WRITE
+    O10 chỉ được ghi/render output thường quy của chính O10 theo schema, O10_OUTPUT nếu framework vận hành dùng field này, O10_RENDER_CHECK nếu framework nội bộ dùng và lý do BLOCKED/NEEDS_FIX nếu framework yêu cầu.
+    O10_OUTPUT là rendered output, không phải state nguồn và không phải source cho A/C/O khác.
+    O10_RENDER_CHECK là metadata kỹ thuật nếu còn dùng; không render O10_RENDER_CHECK vào output thường quy.
+    O10 không được ghi/tạo/sửa O10_STATE, O10_REV, O10_FINAL, O10_ERROR field riêng nếu contract hiện tại không định nghĩa, G_STATE, O_RENDER_LIST, O_RENDER_ORDER, A_STATE, C_STATE, C2_STATE, C1/C3/C4/C5/C6/C7, O module khác hoặc S/G.
+    Khi SKIP, O10 không tạo/cập nhật O10_OUTPUT.
+
+O10_RENDER_SCHEMA
+    O10 render thành block riêng theo contract O hiện tại; O10 không bắt buộc code block `text` riêng nếu contract O10 hiện hành không yêu cầu và không tự thêm code block riêng nếu không cần.
+    Heading literal chuẩn: `CẢNH BÁO LÂM SÀNG`.
+    Thứ tự mục chuẩn, tối đa 6 mục:
+        1. `Cảnh báo lâm sàng:` — lấy từ C2_WARNINGS hoặc phần tương ứng trong C2_FINAL.
+        2. `Mức độ cảnh báo / nguy cơ:` — lấy từ C2_RISK_LEVEL nếu C2 có.
+        3. `Dấu hiệu nguy cơ / dấu hiệu cần chú ý:` — lấy từ C2_RED_FLAGS hoặc phần tương ứng trong C2_FINAL.
+        4. `Cần theo dõi / đánh giá lại:` — lấy từ C2_MONITORING_POINTS nếu có.
+        5. `Khuyến nghị đã được C2 chốt:` — lấy từ C2_RECOMMENDATIONS nếu có.
+        6. `Ghi chú giới hạn:` — lấy từ C2_FINAL nếu C2 có ghi giới hạn/lý do.
+    Nếu C2 không có nội dung cho một mục, O10 không tự thêm mục, không lấp mục trống, không bù từ A/A13/A15/C1/C3-C7/O output và không tự nâng/hạ/sửa nội dung C2.
+    Nếu C2 ghi không có cảnh báo nổi bật, O10 render đúng câu C2 đã chốt, ví dụ `Không có cảnh báo lâm sàng nổi bật từ C2` hoặc câu tương ứng từ C2; không tự thêm cảnh báo/mức độ/red flags/khuyến nghị và không tự ghi “chưa ghi nhận/chưa có dữ kiện” nếu C2 không chốt câu đó.
+    Khi xuất thật, không in placeholder, tên biến, nhãn kỹ thuật như C2_STATE/C2_FINAL/O10_OUTPUT, metadata, check/error/rev/state hoặc debug text.
+
+O10_LOGIC_RULES
+    O10 phải giữ nguyên nội dung lâm sàng/source semantic từ C2_STATE/C2_FINAL; O10 chỉ được áp dụng O_PRESENTATION_NORMALIZATION khi render trình bày. “Render nguyên nội dung C2” hoặc “render đúng câu C2 đã chốt” không cấm 6 thao tác presentation allowlist.
+    O10 render nguyên nội dung C2 đúng vị trí theo mapping O10. O10 không sửa chính tả, từ ngữ, thuật ngữ, ngày tháng, số liệu, đơn vị hoặc nội dung lâm sàng; mọi lỗi ngoài allowlist presentation phải BLOCKED/NEEDS_FIX và route về C2/module nguồn A/C tương ứng.
+    O10 không tự tạo cảnh báo, không tự phân tầng nguy cơ nếu C2 không có C2_RISK_LEVEL, không tự tạo dấu hiệu nguy cơ/điểm theo dõi/khuyến nghị nếu C2 không có, không tự biến dữ kiện đã có hoặc kết quả A14 thành cảnh báo, không biến cảnh báo thành y lệnh/chỉ định/hướng điều trị, không biến khuyến nghị C2 thành A13_TREATMENT và không tự tạo chẩn đoán/chẩn đoán phân biệt/cảnh báo thuốc/tra cứu nguồn.
+    Nếu cần bổ sung cảnh báo mới, phải quay lại C2 theo điều phối hệ thống; O10 không tự chạy hoặc tự sửa C2.
+
+O10_SPECIAL_RULES
+    Boundary với C2: C2 tạo nội dung; O10 chỉ render; O10 không thay C2, không sửa C2 và không tự chạy C2.
+    Boundary với A: O10 không đọc A_STATE để tự tạo cảnh báo; không dùng A12 để tạo/sửa chẩn đoán; không dùng A13/A13_LABS/A13_IMAGING/A13_TREATMENT để tự tạo khuyến nghị/hướng xử trí/chỉ định; không biến C2_RECOMMENDATIONS thành A13_TREATMENT; không dùng A14 để tự tạo cảnh báo; không dùng A15 thuốc/đơn thuốc hoặc cảnh báo thuốc.
+    Boundary với C/O khác: O10 không đọc C1/O9 để render hỏi thêm/khám thêm/xét nghiệm cần làm; không thay O9; không đọc C3/O11/A15 để render cảnh báo thuốc/an toàn thuốc; không thay O11; không đọc C6/O12/web/guideline để tra cứu nguồn; không thay O12; không đọc C5/O13/A12 để render chẩn đoán phân biệt/chẩn đoán; không thay O13; không đọc C4 để bù cảnh báo nếu C2 không chốt; không đọc C7/bệnh trình/ra viện để tự tạo cảnh báo; không tự gọi O9/O11/O12/O13.
+    Boundary với output cũ: O10 không đọc O output cũ, O10_OUTPUT cũ, rendered output cũ hoặc O1-O9/O11-O13 output.
+    Metadata: không render metadata kỹ thuật, O10_RENDER_CHECK, O10_ERROR nếu framework có, C2_CHECK, C2_ERROR trong output thường quy khi C2_CHECK PASS, STATE_VERSION, ROUND_ID, RUN_MODE, A/C/O REV, A_CHECK/C_CHECK/O_CHECK, CREATE/UPDATE/REUSE, A_MODULE_REV/C_MODULE_REV, output cũ hoặc debug text.
+    No-warning/no-data: nếu C2 ghi không có cảnh báo nổi bật, O10 render đúng câu C2 đã chốt; nếu C2 chưa tạo nội dung nhưng O10 được yêu cầu, O10 NEEDS_FIX/BLOCKED; không tự bù cảnh báo từ nguồn khác và không nhầm “không có cảnh báo” với “thiếu source”.
+
+O10_CHECK_PASS_IF
+    PASS khi O10 nằm trong G_STATE.O_RENDER_LIST/O_RENDER_ORDER, đã đến lượt render, C2_STATE tồn tại, C2_CHECK = PASS, C2_FINAL hoặc các field C2 tương ứng có nội dung/schema hợp lệ, chỉ dùng source allowlist, không dùng A_STATE/A12/A13/A14/A15 để tự tạo cảnh báo, không dùng C1/C3/C4/C5/C6/C7 để bù, không dùng O output cũ/rendered output cũ, không dùng raw input/hidden memory/web, không dùng patch/delta, output đúng heading/schema O10, các mục render đúng từ C2, không tự thêm mục/nội dung ngoài C2, không tự tạo cảnh báo/mức độ/khuyến nghị, không render metadata, nếu C2 ghi không có cảnh báo thì O10 render đúng câu C2 đã chốt, và nếu O10_RENDER_CHECK = PASS thì không có lỗi nội bộ còn mở.
+
+O10_NEEDS_FIX_IF
+    NEEDS_FIX/BLOCKED khi O10 được plan nhưng thiếu điều kiện RUN, O10 chưa đến lượt render, thiếu C2_STATE, C2_CHECK != PASS, C2_CHECK = NEEDS_FIX, C2_FINAL thiếu/sai schema, C2_WARNINGS thiếu/sai schema khi cần, C2_RISK_LEVEL thiếu/sai schema khi C2 cần render mức độ, C2_RED_FLAGS thiếu/sai schema khi cần, C2_MONITORING_POINTS thiếu/sai schema khi cần, C2_RECOMMENDATIONS thiếu/sai schema khi cần, C2 chưa tạo nội dung nhưng O10 được yêu cầu, C2_STATE mâu thuẫn hoặc không phù hợp format O10, dùng source ngoài allowlist, dùng A/A12/A13/A14/A15 để tự tạo/bù cảnh báo, dùng C1/C3/C4/C5/C6/C7 để bù, dùng O output cũ/rendered output cũ, dùng raw input/hidden memory/web, dùng patch/delta, output sai schema, O10 tự tạo/bù cảnh báo/mức độ/red flags/theo dõi/khuyến nghị, O10 biến cảnh báo thành y lệnh/hướng điều trị, O10 lẫn cảnh báo thuốc/O11, O10 lẫn tra cứu nguồn/O12, O10 lẫn chẩn đoán phân biệt/O13 hoặc O10 render metadata kỹ thuật.
+
+O10_ERROR_RULE
+    Khi NEEDS_FIX/BLOCKED, O10 không render bản hoàn chỉnh, không tự tạo cảnh báo/mức độ/nguy cơ/khuyến nghị/hướng xử trí/chỉ định, không tự sửa hoặc chạy C2, không tự chạy A/C/O và không fallback sang A/A13/A15/C1/C3-C7/O output cũ/raw/hidden/web.
+    Nếu framework cần lỗi/check nội bộ, ghi lý do chặn theo framework, có thể dùng C2_ERROR làm lý do chặn và không render lỗi/check metadata vào output thường quy.
+    Lỗi phải nêu rõ nguyên nhân như O10 không nằm render plan, thiếu C2_STATE, C2_CHECK không PASS, C2_FINAL hoặc C2 field thiếu/sai schema, C2_STATE mâu thuẫn, dùng nguồn cấm, output sai schema hoặc lẫn O11/O12/O13/A13.
+
+O10_REUSE_RULE
+    O10 không có lifecycle CREATE/UPDATE/REUSE state riêng theo contract hiện tại.
+    Không reuse O output cũ, O10_OUTPUT cũ hoặc rendered output cũ; khi G plan O10, render từ current allowed sources của ROUND hiện tại.
+    Nếu hệ thống có REUSE nội bộ, REUSE chỉ là metadata điều phối, không làm nguồn nội dung và không render thường quy.
+    Không ghi “reuse O10”, không tạo O10_REV và không tạo O10_STATE.
+
+O10_END
+    Sau O10, hệ thống render O tiếp theo theo G_STATE.O_RENDER_ORDER; O10 không tự chạy O11, không gọi A/C, không sửa state và không sửa O khác.
+
+<<< END O10
+
+####################################################################################################
+
+O11 — THUỐC / CÁCH DÙNG / ĐIỀU CHỈNH LIỀU VÀ CẢNH BÁO
+Version: BA S-G-A-C-O V4 compact
+Update: 25/07/2026 GMT+7 — renderer-only canonical C3_STATE mapping
+
+O11_READ_LOCK
+    Phải đọc toàn bộ section từ O11_ROLE đến O11_END và marker kết thúc O11; O11 chỉ render canonical C3_STATE.
+
+O11_ROLE
+    O11 là strict renderer, chỉ trình bày nội dung đã được C3 tạo/chốt. O11 không chọn/thêm/bỏ/đổi thuốc; không tạo/sửa/tính liều, ngưỡng hay adjustment; không kiểm chỉ định/chống chỉ định/tương tác/trùng lặp; không tạo cảnh báo/theo dõi/lời dặn mới; không sửa C3.
+
+O11_ALLOWED_SOURCE
+    O11 chỉ đọc:
+        1. G_STATE cho plan/order/metadata điều phối.
+        2. Current canonical C3_STATE là nguồn nội dung duy nhất.
+        3. C3_CHECK, C3_ERROR và C3_RETURN_TO_A15 chỉ để kiểm điều kiện render, không render metadata.
+    O11 không đọc A15_STATE, A15_TO_C3, A15_MEDICATION_LIST, A_STATE rộng, raw user input, web/guideline, hidden memory, rendered/old O output, generic C_STATE/Cx_STATE khác hoặc patch/delta.
+    Không fallback khi C3 thiếu nội dung; phải BLOCKED/NEEDS_FIX và route về C3.
+
+O11_ALLOWED_ACTION
+    RUN khi O11 được plan, đến lượt, current C3_STATE tồn tại, C3_CHECK=PASS, C3_ERROR=NONE, C3_RETURN_TO_A15=NONE, sáu canonical content field hợp lệ và output one-to-one.
+    SKIP khi không nằm plan/chưa đến lượt; không tạo output SKIP.
+    BLOCKED/NEEDS_FIX khi thiếu điều kiện RUN, field canonical thiếu/sai, source có thuốc nhưng instruction không đầy đủ, phải fallback A15, hoặc O11 tự tạo/sửa/tính nội dung.
+
+O11_ALLOWED_WRITE
+    O11 chỉ render O11 output/check-reason kỹ thuật nếu framework dùng; không tạo clinical state/revision, không sửa G/A/C/O khác.
+
+O11_RENDER_SCHEMA
+    Heading: THUỐC / CÁCH DÙNG / ĐIỀU CHỈNH LIỀU VÀ CẢNH BÁO
+    Render đúng sáu phần theo thứ tự và mapping duy nhất:
+        1. Danh sách thuốc: C3_SOURCE_MEDICATION_FROM_A15.
+        2. Cách dùng thuốc: C3_MEDICATION_INSTRUCTIONS.
+        3. Quy tắc điều chỉnh liều: C3_DOSE_ADJUSTMENT_RULES.
+        4. Tác dụng phụ và cảnh báo: C3_ADVERSE_EFFECT_WARNINGS.
+        5. Vấn đề cần theo dõi: C3_MONITORING_POINTS.
+        6. Lời dặn sử dụng thuốc an toàn: C3_PATIENT_ADVICE.
+    O11 không render C3_RETURN_TO_A15, C3_CHECK, C3_ERROR, revision, state names hoặc metadata trong output hoàn chỉnh.
+    No-medication PASS render đúng canonical no-medication content từ C3, không tự thêm cảnh báo.
+
+O11_LOGIC_RULES
+    Mapping one-to-one, giữ nguyên semantic lâm sàng; chỉ áp dụng O_PRESENTATION_NORMALIZATION. Không thêm, bớt, sửa, tính, suy luận hoặc hợp thức hóa nội dung.
+    Mỗi medication/instruction/adjustment/warning/monitoring/advice phải traceable về canonical C3 field tương ứng.
+
+O11_SPECIAL_RULES
+    C3_STATE là source duy nhất. A15 và A15_TO_C3 không phải fallback. Return active hoặc C3 non-PASS chặn output hoàn chỉnh. O11 không tự gọi C3/A15 hoặc sửa source.
+
+O11_CHECK_PASS_IF
+    PASS khi O11 được plan/đến lượt; current C3_STATE full; C3_CHECK=PASS; C3_ERROR=NONE; C3_RETURN_TO_A15=NONE; đủ C3_SOURCE_MEDICATION_FROM_A15, C3_MEDICATION_INSTRUCTIONS, C3_DOSE_ADJUSTMENT_RULES, C3_ADVERSE_EFFECT_WARNINGS, C3_MONITORING_POINTS, C3_PATIENT_ADVICE; output đúng sáu phần/one-to-one; chỉ dùng allowlist; không tạo/sửa/tính nội dung; không render metadata.
+
+O11_NEEDS_FIX_IF
+    NEEDS_FIX/BLOCKED khi thiếu C3_STATE; C3_CHECK khác PASS; C3_ERROR khác NONE; C3_RETURN_TO_A15 khác NONE; canonical field thiếu/sai; medication source non-empty nhưng instruction/adjustment thiếu; dùng/fallback A15/raw/web/output cũ; output sai sáu phần; hoặc O11 tự tạo/sửa/tính thuốc, liều, ngưỡng, adjustment, cảnh báo, monitoring hay advice.
+
+O11_ERROR_RULE
+    Khi blocked không render bản hoàn chỉnh, không sửa C3 và nêu exact C3 field/precondition cần sửa nếu framework yêu cầu; không render metadata lỗi trong output thường quy.
+
+O11_REUSE_RULE
+    O11 không có clinical lifecycle/state riêng và không reuse rendered output; mỗi lần được plan phải render từ current canonical C3_STATE.
+
+O11_END
+    Sau O11, render O kế tiếp theo plan; O11 không tự chạy A/C/O hoặc sửa state.
+<<< END O11
+
+
+
+####################################################################################################
+
+O12 — TRA CỨU / NGOÀI BỆNH ÁN
+Version: BA S-G-A-C-O V4
+Update: 29/06/2026 GMT+7 — compact allowlist / O12 renderer-only / C6 source contract
+
+O12_READ_LOCK
+    Khi audit, patch, final review hoặc render O12, phải đọc nguyên section từ header `O12 — TRA CỨU / NGOÀI BỆNH ÁN` đến marker `<<< END O12`.
+    Không patch/render dựa trên diff, trích đoạn, ví dụ hoặc checklist rời.
+    Không sửa O11, O13 hoặc section khác khi chỉ xử lý O12.
+
+O12_ROLE
+    O12 là strict renderer/output module thuộc lớp O cho block `TRA CỨU / NGOÀI BỆNH ÁN`.
+    O12 là renderer-only của C6 và chỉ trình bày nội dung tra cứu/ngoài bệnh án đã được C6 tạo/chốt trong `C6_STATE` hoặc `C6_FINAL`.
+    O12 không tự xác định, tự tạo hoặc tự bổ sung câu hỏi/chủ đề tra cứu, kết quả trả lời, ý chính, nguồn tham khảo, citation, guideline, bằng chứng, mức độ tin cậy, phạm vi áp dụng, giới hạn dữ liệu, ghi chú không đưa vào bệnh án hoặc nội dung bệnh án chính thức.
+    O12 không tự tạo cảnh báo lâm sàng, cảnh báo thuốc, chẩn đoán, chẩn đoán phân biệt, hướng xử trí, chỉ định, xét nghiệm/cận lâm sàng, thuốc hoặc đơn thuốc.
+    O12 không phải C6, O9, O10, O11, O13, A12, A13 hoặc A15.
+    O12 output nếu có là rendered output, không phải state nguồn, không là source cho A/C/O khác, không được reuse như nguồn lâm sàng và không biến nội dung ngoài bệnh án thành dữ kiện bệnh án chính thức.
+
+O12_ALLOWED_SOURCE
+    O12 chỉ được đọc:
+        1. `G_STATE` ROUND hiện tại: chỉ kiểm O12 nằm trong `O_RENDER_LIST`/`O_RENDER_ORDER`, đã đến lượt render và metadata điều phối cần thiết; không dùng làm nguồn nội dung, không render metadata G_STATE.
+        2. `C_GATE` mới nhất nếu hệ thống có: chỉ kiểm `C6_STATE` hợp lệ; không render `C_GATE`, không dùng để tạo nội dung tra cứu.
+        3. `C6_STATE`: nguồn chính và bắt buộc của O12.
+        4. `C6_CHECK`: phải = `PASS` để render thường quy; nếu không PASS thì O12 `BLOCKED/NEEDS_FIX`.
+        5. `C6_FINAL`: nguồn tổng hợp cuối nếu C6 đã chốt.
+        6. `C6_QUERY` hoặc `C6_TOPIC` nếu có: nguồn cho mục `1. Câu hỏi / chủ đề tra cứu:`.
+        7. `C6_ANSWER` hoặc `C6_CONTENT` nếu có: nguồn cho mục `2. Kết quả tra cứu / trả lời:`.
+        8. `C6_KEY_POINTS` nếu có: nguồn cho mục `3. Ý chính:`.
+        9. `C6_SOURCES` hoặc `C6_REFERENCES` hoặc `C6_CITATIONS` nếu có: nguồn cho mục `4. Nguồn tham khảo:`.
+        10. `C6_APPLICABILITY` nếu có: nguồn cho mục `5. Phạm vi áp dụng:`.
+        11. `C6_LIMITATIONS` nếu có: nguồn cho mục `6. Giới hạn dữ liệu / lưu ý độ tin cậy:`.
+        12. `C6_NOT_FOR_MEDICAL_RECORD` hoặc field tương đương nếu có: nguồn cho mục `7. Ghi chú không đưa trực tiếp vào bệnh án:`.
+        13. `C6_ERROR`: chỉ dùng làm lý do chặn khi `BLOCKED/NEEDS_FIX` nếu hệ thống yêu cầu; không render trong output thường quy khi `C6_CHECK = PASS`.
+    Nếu cần bối cảnh, bối cảnh phải nằm trong `C6_STATE` hoặc `C6_FINAL`; O12 không đọc A_STATE trực tiếp để tự tạo nội dung.
+    O12 không đọc/dùng raw user input, hidden memory, web/guideline/source ngoài trực tiếp, output O cũ, `O12_OUTPUT` cũ, rendered output cũ, A_STATE rộng, A_GATE để tạo nội dung, A_STATE_PATCH, C_STATE_PATCH, A12, A13, A13_LABS, A13_IMAGING, A13_TREATMENT, A15, C1_STATE, C2_STATE, C3_STATE, C4_STATE, C5_STATE, C7_STATE, generic C_STATE/Cx_STATE ngoài C6, O9_OUTPUT, O10_OUTPUT, O11_OUTPUT, O13_OUTPUT hoặc metadata RUN_MODE/REV làm nguồn nội dung.
+    Nếu cần nội dung tra cứu mới hoặc sửa nội dung tra cứu, phải quay lại C6 theo điều phối hệ thống; O12 không tự gọi hoặc tự chạy C6.
+
+O12_ALLOWED_ACTION
+    O12 RUN/render khi đồng thời: O12 nằm trong `G_STATE.O_RENDER_LIST` hoặc `G_STATE.O_RENDER_ORDER`, đã đến lượt theo `G_STATE.O_RENDER_ORDER`, `C6_STATE` tồn tại, `C6_CHECK = PASS`, `C6_FINAL` hoặc các field C6 tương ứng có nội dung/schema hợp lệ, output đúng schema O12 và chỉ dùng source allowlist.
+    O12 SKIP khi O12 không nằm trong render plan hoặc chưa đến lượt render; khi SKIP không render O12, không tạo/cập nhật `O12_OUTPUT`, không in `O12_OUTPUT = SKIP` và không tự thêm O12 vào render plan.
+    O12 BLOCKED/NEEDS_FIX khi O12 được yêu cầu render nhưng thiếu điều kiện RUN, thiếu `C6_STATE`, `C6_CHECK != PASS`, `C6_CHECK = NEEDS_FIX`, `C6_FINAL` thiếu/sai schema, field C6 cần cho mục đang render thiếu/sai schema, C6 chưa tạo nội dung nhưng O12 được yêu cầu, `C6_STATE` mâu thuẫn/không phù hợp format O12, dùng nguồn cấm, output sai schema, O12 cố tự tra cứu/tự trả lời/tự thêm nguồn, tự bù bằng A/C/O khác hoặc biến tra cứu thành nội dung bệnh án/chỉ định/đơn thuốc.
+    Khi BLOCKED/NEEDS_FIX, O12 không render bản hoàn chỉnh, không tự tra cứu, không tự trả lời, không tự thêm source/guideline/citation, không tự tạo ý chính/giới hạn/phạm vi áp dụng, không tự sửa/chạy C6, không tự chạy A/C/O, không tự sửa A/C/G/O, không fallback sang A/A13/A15/C1-C5/C7/O output cũ/raw/hidden/web và chỉ ghi lý do chặn nếu hệ thống yêu cầu.
+
+O12_ALLOWED_WRITE
+    O12 chỉ được ghi/render output thường quy của chính O12 theo schema, `O12_OUTPUT` nếu framework vận hành dùng field này, `O12_RENDER_CHECK` nếu framework nội bộ dùng và lý do BLOCKED/NEEDS_FIX nếu framework yêu cầu.
+    `O12_OUTPUT` là rendered output, không phải state nguồn và không phải source cho A/C/O khác.
+    `O12_RENDER_CHECK` là metadata kỹ thuật nếu còn dùng; không render `O12_RENDER_CHECK` vào output thường quy.
+    Không ghi/tạo/sửa `O12_STATE`, `O12_REV`, `O12_FINAL`, `O12_ERROR` field riêng nếu contract hiện tại không định nghĩa, `G_STATE`, `O_RENDER_LIST`, `O_RENDER_ORDER`, `A_STATE`, `C_STATE`, `C6_STATE`, C1/C2/C3/C4/C5/C7, O module khác hoặc S/G.
+    Không tạo/cập nhật `O12_OUTPUT` khi SKIP; không sửa A_STATE/C_STATE/G_STATE/O khác; không sửa C6_STATE; không gọi A/C/O khác.
+
+O12_RENDER_SCHEMA
+    O12 render thành block riêng theo contract O hiện tại, không bắt buộc code block `text` riêng và không thêm code block riêng nếu không cần.
+    Heading literal chuẩn: `TRA CỨU / NGOÀI BỆNH ÁN`.
+    Thứ tự mục chuẩn, tối đa 7 mục:
+        1. `Câu hỏi / chủ đề tra cứu:` — từ `C6_QUERY` hoặc `C6_TOPIC` hoặc phần tương ứng trong `C6_FINAL`.
+        2. `Kết quả tra cứu / trả lời:` — từ `C6_ANSWER` hoặc `C6_CONTENT` hoặc phần tương ứng trong `C6_FINAL`.
+        3. `Ý chính:` — từ `C6_KEY_POINTS` nếu có.
+        4. `Nguồn tham khảo:` — từ `C6_SOURCES` hoặc `C6_REFERENCES` hoặc `C6_CITATIONS` nếu có.
+        5. `Phạm vi áp dụng:` — từ `C6_APPLICABILITY` nếu có.
+        6. `Giới hạn dữ liệu / lưu ý độ tin cậy:` — từ `C6_LIMITATIONS` hoặc phần tương ứng trong `C6_FINAL` nếu có.
+        7. `Ghi chú không đưa trực tiếp vào bệnh án:` — từ `C6_NOT_FOR_MEDICAL_RECORD` hoặc field tương đương nếu có.
+    Nếu C6 không có nội dung cho một mục, O12 không tự thêm mục, không lấp mục trống, không tự tạo ý chính/nguồn/giới hạn/phạm vi, không bù từ A/A13/A15/C1-C5/C7/O output, không sửa nội dung C6 và không đổi thứ tự schema đã khóa.
+    Nếu C6 ghi không có nội dung tra cứu, O12 render đúng câu C6 đã chốt, ví dụ `Không có nội dung tra cứu từ C6.` hoặc câu tương ứng từ C6; không tự thêm nguồn/ý chính/giới hạn/phạm vi áp dụng và không tự ghi “chưa ghi nhận/chưa có dữ kiện” nếu C6 không chốt câu đó.
+    Khi xuất thật, không in placeholder, tên biến, nhãn kỹ thuật như `C6_STATE`, `C6_FINAL`, `O12_OUTPUT`, metadata, check/error/rev/state, debug text hoặc `C6_ERROR` thường quy khi `C6_CHECK = PASS`.
+
+O12_LOGIC_RULES
+    O12 phải giữ nguyên nội dung/source semantic từ C6_STATE/C6_FINAL; O12 chỉ được áp dụng O_PRESENTATION_NORMALIZATION khi render trình bày. “Render nguyên nội dung C6” hoặc “render đúng câu C6 đã chốt” không cấm 6 thao tác presentation allowlist.
+    O12 render nguyên nội dung C6 đúng vị trí theo mapping O12; mỗi nội dung output phải traceable về field C6 allowed hoặc phần tương ứng trong `C6_FINAL`; không có nội dung nào được lấy từ non-C6 source. O12 không sửa chính tả, từ ngữ, thuật ngữ, ngày tháng, số liệu, đơn vị, nguồn/citation hoặc nội dung C6; mọi lỗi ngoài allowlist presentation phải BLOCKED/NEEDS_FIX và route về C6/module nguồn A/C tương ứng.
+    O12 không tự tra cứu, tự trả lời, tự thêm nguồn tham khảo/guideline/citation, tự tóm tắt nếu C6 không cung cấp, tự tạo ý chính/giới hạn dữ liệu/lưu ý độ tin cậy/phạm vi áp dụng nếu C6 không cung cấp, tự biến nội dung tra cứu thành dữ kiện bệnh án chính thức, tự biến nguồn tham khảo/guideline thành chỉ định/hướng xử trí/xét nghiệm/cận lâm sàng/thuốc/đơn thuốc, tự tạo cảnh báo lâm sàng/cảnh báo thuốc/chẩn đoán phân biệt hoặc tự dùng raw input/hidden/web/output cũ để bù.
+    Nếu cần bổ sung nội dung tra cứu mới, phải quay lại C6 theo điều phối hệ thống; O12 không tự chạy C6 và không tự sửa C6.
+
+O12_SPECIAL_RULES
+    Boundary với C6: C6 tạo nội dung tra cứu/ngoài bệnh án; O12 chỉ render, không thay C6, không sửa C6, không tự chạy C6; nếu cần nội dung tra cứu mới phải chạy lại C6.
+    Boundary với bệnh án chính thức: O12 không biến nội dung tra cứu thành dữ kiện bệnh án chính thức, không biến nguồn tham khảo/guideline thành chẩn đoán/chỉ định/y lệnh/đơn thuốc và không tạo/sửa bệnh án dựa trên nội dung ngoài bệnh án.
+    Boundary với A: O12 không đọc A_STATE rộng để tự tạo nội dung, không dùng A12 để tạo/sửa chẩn đoán, không dùng A13/A13_LABS/A13_IMAGING/A13_TREATMENT để tạo hướng xử trí/chỉ định/xét nghiệm và không dùng A15 để tạo/sửa thuốc/đơn thuốc.
+    Boundary với C/O khác: O12 không đọc C1/O9 để render hỏi thêm/khám thêm/xét nghiệm cần làm; không đọc C2/O10 để render cảnh báo lâm sàng; không đọc C3/O11 để render cảnh báo thuốc/an toàn thuốc; không đọc C5/O13/A12 để render chẩn đoán phân biệt/chẩn đoán; không đọc C4 để bù nội dung tra cứu; không đọc C7/bệnh trình/ra viện để tự tạo nội dung tra cứu; không thay hoặc tự gọi O9/O10/O11/O13.
+    Boundary với output cũ: O12 không đọc O output cũ, `O12_OUTPUT` cũ, rendered output cũ hoặc O9/O10/O11/O13 output.
+    Metadata: không render metadata kỹ thuật, gồm `O12_RENDER_CHECK`, O12_ERROR nếu framework có, C6_CHECK, C6_ERROR trong output thường quy khi C6_CHECK PASS, STATE_VERSION, ROUND_ID, RUN_MODE, A/C/O REV, A_CHECK/C_CHECK/O_CHECK, CREATE/UPDATE/REUSE, A_MODULE_REV/C_MODULE_REV, C6_TO_MODULE, output cũ hoặc debug text.
+    No-lookup/no-data: nếu C6 ghi không có nội dung tra cứu, O12 render đúng câu C6 đã chốt; nếu C6 chưa tạo nội dung nhưng O12 được yêu cầu, O12 NEEDS_FIX/BLOCKED; không tự bù nội dung từ nguồn khác và không nhầm “không có nội dung tra cứu” với “thiếu source”.
+
+O12_CHECK_PASS_IF
+    PASS khi O12 nằm trong `G_STATE.O_RENDER_LIST/O_RENDER_ORDER`, đã đến lượt render, `C6_STATE` tồn tại, `C6_CHECK = PASS`, `C6_FINAL` hoặc các field C6 tương ứng có nội dung/schema hợp lệ, chỉ dùng source allowlist, không dùng A_STATE/A12/A13/A15 để tự tạo nội dung, không dùng C1/C2/C3/C4/C5/C7 để bù, không dùng O output cũ/rendered output cũ, không dùng raw input/hidden memory/web, không dùng patch/delta, output đúng heading/schema O12, các mục render đúng từ C6, không tự thêm mục/nội dung ngoài C6, không tự tra cứu/trả lời/thêm nguồn, không biến nội dung tra cứu thành bệnh án/chỉ định/đơn thuốc, không render metadata, nếu C6 ghi không có nội dung tra cứu thì O12 render đúng câu C6 đã chốt và nếu `O12_RENDER_CHECK = PASS` thì không có lỗi nội bộ còn mở.
+
+O12_NEEDS_FIX_IF
+    NEEDS_FIX/BLOCKED khi O12 được plan nhưng thiếu điều kiện RUN, O12 chưa đến lượt render, thiếu `C6_STATE`, `C6_CHECK != PASS`, `C6_CHECK = NEEDS_FIX`, `C6_FINAL` thiếu/sai schema, `C6_QUERY`/`C6_TOPIC` thiếu/sai schema khi cần, `C6_ANSWER`/`C6_CONTENT` thiếu/sai schema khi cần, `C6_KEY_POINTS` thiếu/sai schema khi cần, `C6_SOURCES`/`C6_REFERENCES`/`C6_CITATIONS` thiếu/sai schema khi cần, `C6_LIMITATIONS` thiếu/sai schema khi cần, `C6_APPLICABILITY` thiếu/sai schema khi cần, `C6_NOT_FOR_MEDICAL_RECORD` hoặc field tương đương thiếu/sai schema khi cần, C6 chưa tạo nội dung nhưng O12 được yêu cầu, `C6_STATE` mâu thuẫn/không phù hợp format O12, O12 cần tự bịa/tự tra cứu/tự thêm nguồn/tự bù mới render được, dùng source ngoài allowlist, dùng A/A12/A13/A15 để tự tạo/bù nội dung, dùng C1/C2/C3/C4/C5/C7 để bù, dùng O output cũ/rendered output cũ, dùng raw input/hidden memory/web, dùng patch/delta, output sai schema, O12 tự tạo/bù nội dung tra cứu/nguồn/ý chính/giới hạn/phạm vi áp dụng, biến tra cứu thành dữ kiện bệnh án/y lệnh/hướng điều trị/đơn thuốc, lẫn hỏi thêm/cần làm thêm/O9, cảnh báo lâm sàng/O10, cảnh báo thuốc/O11, chẩn đoán phân biệt/O13 hoặc render metadata kỹ thuật.
+
+O12_ERROR_RULE
+    Khi NEEDS_FIX/BLOCKED, O12 không render bản hoàn chỉnh, không tự tra cứu, không tự trả lời, không tự thêm nguồn/guideline/citation, không tự sửa/chạy C6, không tự chạy A/C/O, không biến tra cứu thành bệnh án và không fallback sang A/A12/A13/A15/C1-C5/C7/O output cũ/raw/hidden/web.
+    Nếu framework cần lỗi/check nội bộ, ghi lý do chặn theo framework, có thể dùng `C6_ERROR` làm lý do chặn và không render lỗi/check metadata vào output thường quy.
+    Lỗi phải nêu rõ nguyên nhân như O12 không nằm render plan, thiếu C6_STATE, C6_CHECK không PASS, C6_FINAL/field C6 thiếu/sai schema, C6_STATE mâu thuẫn, dùng nguồn cấm, output sai schema, tự tra cứu/tự thêm nguồn hoặc lẫn O9/O10/O11/O13/A12/A13/A15.
+
+O12_REUSE_RULE
+    O12 không có lifecycle CREATE/UPDATE/REUSE state riêng theo contract hiện tại.
+    Không reuse O output cũ, `O12_OUTPUT` cũ hoặc rendered output cũ; không patch/delta từ output cũ; khi G plan O12, render từ current allowed sources của ROUND hiện tại.
+    Nếu hệ thống có REUSE nội bộ, REUSE chỉ là metadata điều phối, không làm nguồn nội dung và không render thường quy; không ghi “reuse O12”, không tạo `O12_REV`, không tạo `O12_STATE`.
+
+O12_END
+    Sau O12, hệ thống render O tiếp theo theo `G_STATE.O_RENDER_ORDER`; O12 không tự chạy O13, không gọi A/C, không sửa state và không sửa O khác.
+
+<<< END O12
+
+
+####################################################################################################
+
+O13 — CHẨN ĐOÁN PHÂN BIỆT / NGHI NGỜ / BỆNH KHÁC CÓ KHẢ NĂNG
+Version: BA S-G-A-C-O V4
+Update: 29/06/2026 GMT+7 — compact allowlist contract, giữ nguyên logic renderer-only / C5-only
+
+O13_READ_LOCK
+    Khi audit, patch, final review hoặc render O13, phải đọc nguyên section từ header O13 này đến `<<< END O13`; không kết luận/sửa từ diff, trích đoạn, ví dụ hoặc output cũ.
+    Chỉ patch O13 trong lượt O13; không đụng O1-O12, nhóm A, nhóm C, S/G hoặc section khác.
+
+O13_ROLE
+    O13 là strict renderer/output thuộc lớp O cho block `CHẨN ĐOÁN PHÂN BIỆT / NGHI NGỜ / BỆNH KHÁC CÓ KHẢ NĂNG`.
+    O13 là renderer-only của C5: chỉ trình bày nội dung đã được C5 tạo/chốt trong `C5_STATE` / `C5_FINAL`.
+    O13 không phải C5, A12, A13, A15, O9, O10, O11 hoặc O12; không tự xác định/tạo chẩn đoán phân biệt, nghi ngờ, bệnh khác, căn cứ, dữ kiện ủng hộ/chống lại, giới hạn loại trừ, dữ kiện còn thiếu, mức ưu tiên nếu C5 không cung cấp, chẩn đoán chính thức, hướng xử trí/chỉ định, xét nghiệm/cận lâm sàng, thuốc/đơn thuốc, cảnh báo hoặc tra cứu.
+    `O13_OUTPUT` nếu có chỉ là rendered output của O13, không phải state nguồn, không là source cho A/C/O khác, không được reuse như nguồn lâm sàng và không biến differential thành chẩn đoán chính thức.
+
+O13_ALLOWED_SOURCE
+    O13 chỉ được đọc:
+        1. `G_STATE` ROUND hiện tại: chỉ kiểm O13 nằm trong `O_RENDER_LIST` / `O_RENDER_ORDER`, đã đến lượt render và metadata điều phối cần thiết; không dùng G_STATE làm nguồn chẩn đoán phân biệt và không render metadata G_STATE.
+        2. `C_GATE` mới nhất nếu hệ thống có: chỉ kiểm `C5_STATE` hợp lệ; không render và không dùng để tạo nội dung.
+        3. `C5_STATE`: nguồn chính và bắt buộc.
+        4. `C5_CHECK`: phải = PASS để render thường quy; nếu không PASS thì O13 `BLOCKED/NEEDS_FIX`.
+        5. `C5_FINAL`: nguồn tổng hợp cuối nếu C5 đã chốt.
+        6. `C5_DIFFERENTIAL_DIAGNOSES` nếu có: nguồn cho mục `1. Chẩn đoán phân biệt:`.
+        7. `C5_OTHER_POSSIBLE_CONDITIONS` nếu có: nguồn cho mục `2. Bệnh khác có khả năng:`.
+        8. `C5_REASONING_BASIS` nếu có: nguồn cho mục `3. Căn cứ lập luận:`.
+        9. `C5_EXCLUSION_LIMITS` nếu có: nguồn cho mục `4. Giới hạn loại trừ / dữ kiện còn thiếu:`.
+        10. `C5_INSUFFICIENT_DATA_NOTE` hoặc field tương đương nếu có: nguồn cho trạng thái “chưa đủ dữ kiện”.
+        11. `C5_NO_DIFFERENTIAL_NOTE` hoặc field tương đương nếu có: nguồn cho trạng thái “không có phân biệt nổi bật”.
+        12. `C5_ERROR`: chỉ dùng làm lý do chặn khi `BLOCKED/NEEDS_FIX` nếu framework yêu cầu; không render trong output thường quy khi `C5_CHECK = PASS`.
+        13. `C5_REV` / `C5_SOURCE_A_REV` nếu hệ thống còn dùng: chỉ là metadata kiểm nội bộ/schema nếu core contract yêu cầu; không render, không tự tạo/sửa nội dung, không biến thành điều kiện bắt buộc nếu `C5_STATE/C5_CHECK/C5_FINAL` đã hợp lệ trừ khi core contract thật sự yêu cầu.
+    Nếu cần bối cảnh, bối cảnh phải nằm trong `C5_STATE` hoặc `C5_FINAL`; O13 không đọc A_STATE trực tiếp để tự tạo nội dung.
+    O13 không được đọc/dùng raw user input, hidden memory/trí nhớ ẩn, web/guideline/source ngoài, output O cũ, `O13_OUTPUT` cũ, rendered output cũ, A_STATE rộng, A_GATE để tạo nội dung, A_STATE_PATCH, C_STATE_PATCH, A12/A13/A14/A15, A13_LABS/A13_IMAGING/A13_TREATMENT, C1/C2/C3/C4/C6/C7, generic C_STATE/Cx_STATE ngoài C5, O9/O10/O11/O12 output hoặc metadata RUN_MODE/REV làm nguồn nội dung.
+    Nếu cần differential mới hoặc sửa differential, phải quay lại C5 theo điều phối hệ thống; O13 không tự gọi hoặc tự chạy C5.
+
+O13_ALLOWED_ACTION
+    RUN/render khi đồng thời: O13 nằm trong `G_STATE.O_RENDER_LIST` hoặc `G_STATE.O_RENDER_ORDER`, đã đến lượt theo `G_STATE.O_RENDER_ORDER`, `C5_STATE` tồn tại, `C5_CHECK = PASS`, `C5_FINAL` hoặc field C5 tương ứng có nội dung/schema hợp lệ, output đúng schema O13 và chỉ dùng source allowlist.
+    SKIP khi O13 không nằm trong render plan hoặc chưa đến lượt render; khi SKIP không render O13, không tạo/cập nhật `O13_OUTPUT`, không in `O13_OUTPUT = SKIP` và không tự thêm O13 vào render plan.
+    BLOCKED/NEEDS_FIX khi O13 được yêu cầu render nhưng thiếu điều kiện RUN, thiếu `C5_STATE`, `C5_CHECK != PASS`, `C5_CHECK = NEEDS_FIX`, `C5_FINAL` thiếu/sai schema, field C5 cần cho mục đang render thiếu/sai schema, C5 chưa tạo nội dung, C5_STATE mâu thuẫn/không phù hợp format O13, C5 có nhiều differential nhưng schema chưa tách bullet/list rõ, dùng nguồn cấm, output sai schema, O13 tự tạo/bù differential/bệnh khác/căn cứ/giới hạn hoặc biến differential thành chẩn đoán chính thức/chỉ định/y lệnh/đơn thuốc.
+    Khi BLOCKED/NEEDS_FIX: không render bản O13 hoàn chỉnh, không tự tạo/thêm/loại/xếp hạng bệnh nếu C5 không có, không tự tạo căn cứ/xét nghiệm/cận lâm sàng, không sửa/chạy C5, không tự chạy A/C/O, không sửa A/C/G/O và chỉ ghi lý do chặn nếu framework yêu cầu.
+
+O13_ALLOWED_WRITE
+    O13 chỉ được ghi/render output thường quy của chính O13 theo schema, `O13_OUTPUT` nếu framework dùng field này, `O13_RENDER_CHECK` nếu framework nội bộ dùng và lý do `BLOCKED/NEEDS_FIX` nếu framework yêu cầu.
+    `O13_OUTPUT` là rendered output, không phải state nguồn và không phải source cho A/C/O khác.
+    `O13_RENDER_CHECK` là metadata kỹ thuật nếu còn dùng; không render vào output thường quy.
+    Không ghi/tạo/sửa `O13_STATE`, `O13_REV`, `O13_FINAL`, `O13_ERROR` field riêng nếu contract hiện tại không định nghĩa, `G_STATE`, `O_RENDER_LIST`, `O_RENDER_ORDER`, `A_STATE`, `C_STATE`, `C5_STATE`, C1/C2/C3/C4/C6/C7, O module khác hoặc S/G.
+    Không tạo/cập nhật `O13_OUTPUT` khi SKIP; không gọi A/C/O khác.
+
+O13_RENDER_SCHEMA
+    O13 render thành block riêng theo contract O hiện tại; O13 không bắt buộc code block `text` riêng nếu contract O13 hiện hành không yêu cầu.
+    Heading literal chuẩn:
+        CHẨN ĐOÁN PHÂN BIỆT / NGHI NGỜ / BỆNH KHÁC CÓ KHẢ NĂNG
+    Thứ tự mục chuẩn, tối đa 5 mục:
+        1. Chẩn đoán phân biệt:
+        2. Bệnh khác có khả năng:
+        3. Căn cứ lập luận:
+        4. Giới hạn loại trừ / dữ kiện còn thiếu:
+        5. Ghi chú:
+            Đây là phần chẩn đoán phân biệt / bệnh khác có khả năng, không phải chẩn đoán chính thức.
+    Mapping: `Chẩn đoán phân biệt` lấy từ `C5_DIFFERENTIAL_DIAGNOSES` hoặc phần tương ứng trong `C5_FINAL`; `Bệnh khác có khả năng` lấy từ `C5_OTHER_POSSIBLE_CONDITIONS` hoặc `C5_FINAL`; `Căn cứ lập luận` lấy từ `C5_REASONING_BASIS` hoặc `C5_FINAL`; `Giới hạn loại trừ / dữ kiện còn thiếu` lấy từ `C5_EXCLUSION_LIMITS`, `C5_INSUFFICIENT_DATA_NOTE` hoặc `C5_FINAL`; `Ghi chú` giữ literal/ý nghĩa giới hạn của O13.
+    Phần `Chẩn đoán phân biệt:` phải là bullet/list nếu có nhiều chẩn đoán; mỗi chẩn đoán phân biệt là một dòng riêng bắt đầu bằng dấu `-`; không nối nhiều chẩn đoán thành một đoạn dài hoặc bằng dấu chấm phẩy trong cùng một dòng; giữ đúng danh sách/thứ tự/mức ưu tiên nếu C5 cung cấp và không tự xếp hạng nếu C5 không cung cấp.
+    Nếu C5 không có nội dung cho một mục: không tự thêm mục, không tự lấp mục trống, không tự tạo căn cứ/giới hạn, không bù từ A/A12/A13/A14/A15/C1-C4/C6/C7/O output, không tự sửa nội dung C5 và không đổi thứ tự schema đã khóa.
+    Nếu C5 ghi “không có phân biệt nổi bật” hoặc “chưa đủ dữ kiện”: O13 render đúng câu/giới hạn C5 đã chốt, không tự thêm bệnh, không tự tạo differential và không tự ghi “chưa ghi nhận/chưa có dữ kiện” nếu C5 không chốt câu đó.
+    Khi xuất thật: không in placeholder, tên biến, nhãn kỹ thuật như `C5_STATE`, `C5_FINAL`, `O13_OUTPUT`, metadata, check/error/rev/state/debug text; không render `C5_ERROR` thường quy khi `C5_CHECK = PASS`; không render `C5_REV`, `C5_SOURCE_A_REV`, `O13_RENDER_CHECK`.
+
+O13_LOGIC_RULES
+    O13 phải giữ nguyên nội dung lâm sàng/source semantic từ C5_STATE/C5_FINAL; O13 chỉ được áp dụng O_PRESENTATION_NORMALIZATION khi render trình bày. “Render nguyên nội dung C5” hoặc “render đúng câu/giới hạn C5 đã chốt” không cấm 6 thao tác presentation allowlist, nhưng O13 không được tự tách/sửa/tạo differential nếu làm thay đổi ý nghĩa C5.
+    O13 render nguyên nội dung C5 đúng vị trí theo mapping O13; mỗi nội dung output phải traceable về field C5 allowed hoặc phần tương ứng trong `C5_FINAL`. O13 không sửa chính tả, từ ngữ, thuật ngữ, ngày tháng, số liệu, đơn vị hoặc nội dung lâm sàng; mọi lỗi ngoài allowlist presentation phải BLOCKED/NEEDS_FIX và route về C5/module nguồn A/C tương ứng.
+    O13 không tự tạo chẩn đoán phân biệt, tự thêm bệnh khác, tự loại bệnh, tự xếp hạng nếu C5 không cung cấp, tự tạo căn cứ lập luận, tự tạo giới hạn loại trừ/dữ kiện còn thiếu, tự tạo xét nghiệm/cận lâm sàng, tự biến differential thành chẩn đoán chính thức/hướng điều trị/chỉ định/y lệnh/đơn thuốc, tự tạo cảnh báo lâm sàng/cảnh báo thuốc/tra cứu hoặc dùng raw input/hidden/web/output cũ để bù.
+    Nếu C5 cung cấp nhiều differential nhưng schema chưa tách dòng/bullet rõ: O13 phải `BLOCKED/NEEDS_FIX`, yêu cầu chạy lại C5 theo schema list và không tự tách/sửa nếu việc tách làm thay đổi ý nghĩa C5.
+    Nếu cần bổ sung differential mới, phải quay lại C5 theo điều phối hệ thống; O13 không tự chạy hoặc tự sửa C5.
+
+O13_SPECIAL_RULES
+    Boundary với C5: C5 tạo nội dung differential/bệnh khác/căn cứ/giới hạn; O13 chỉ render, không thay/sửa/chạy C5; nếu cần nội dung differential mới phải chạy lại C5.
+    Boundary với A: A12 là chẩn đoán chính thức; A13 là hướng xử trí/chỉ định/điều trị; A15 là thuốc/đơn thuốc; O13 không tạo/sửa chẩn đoán chính thức, hướng xử trí, chỉ định, xét nghiệm, thuốc/đơn thuốc và không dùng A_STATE/A12/A13/A13_LABS/A13_IMAGING/A13_TREATMENT/A14/A15 để tự tạo/bù nội dung.
+    Boundary với C/O khác: O13 không đọc C1/O9 để render hỏi thêm/khám thêm/xét nghiệm cần làm; không đọc C2/O10 để render cảnh báo lâm sàng; không đọc C3/O11 để render cảnh báo thuốc/an toàn thuốc; không đọc C6/O12/web/guideline để render tra cứu/reference/evidence; không đọc C4 hoặc C7/bệnh trình/ra viện để tự tạo differential; không thay hoặc tự gọi O9/O10/O11/O12.
+    Boundary với output cũ: O13 không đọc O output cũ, `O13_OUTPUT` cũ, rendered output cũ hoặc O9/O10/O11/O12 output.
+    Metadata: không render metadata kỹ thuật, gồm `O13_RENDER_CHECK`, O13_ERROR nếu framework có, `C5_CHECK`, `C5_ERROR` trong output thường quy khi C5_CHECK PASS, `C5_REV`, `C5_SOURCE_A_REV`, STATE_VERSION, ROUND_ID, RUN_MODE, A/C/O REV, A_CHECK/C_CHECK/O_CHECK, CREATE/UPDATE/REUSE, A_MODULE_REV/C_MODULE_REV, output cũ hoặc debug text.
+    No-differential/no-data: nếu C5 ghi “không có phân biệt nổi bật” hoặc “chưa đủ dữ kiện”, O13 render đúng câu C5 đã chốt; nếu C5 chưa tạo nội dung nhưng O13 được yêu cầu thì O13 NEEDS_FIX/BLOCKED; không tự bù nội dung từ nguồn khác và không nhầm “không có phân biệt nổi bật” với “thiếu source”.
+
+O13_CHECK_PASS_IF
+    PASS khi O13 nằm trong `G_STATE.O_RENDER_LIST/O_RENDER_ORDER`, đã đến lượt render, `C5_STATE` tồn tại, `C5_CHECK = PASS`, `C5_FINAL` hoặc các field C5 tương ứng có nội dung/schema hợp lệ, chỉ dùng source allowlist, output đúng heading/schema O13, `Chẩn đoán phân biệt` render bullet riêng nếu có nhiều mục, các mục render đúng từ C5, không tự thêm nội dung ngoài C5, không tự tạo differential/bệnh khác/căn cứ/giới hạn, không dùng A/A12/A13/A14/A15/C1/C2/C3/C4/C6/C7/O output cũ/raw/hidden/web/patch-delta để bù, không biến differential thành chẩn đoán chính thức/chỉ định/y lệnh/đơn thuốc, không render metadata, và nếu C5 ghi không có phân biệt nổi bật/chưa đủ dữ kiện thì O13 render đúng câu C5 đã chốt.
+    Nếu `O13_RENDER_CHECK = PASS` thì không có lỗi nội bộ còn mở.
+
+O13_NEEDS_FIX_IF
+    NEEDS_FIX/BLOCKED khi O13 được plan nhưng thiếu điều kiện RUN, O13 chưa đến lượt render, thiếu `C5_STATE`, `C5_CHECK != PASS`, `C5_CHECK = NEEDS_FIX`, `C5_FINAL` thiếu/sai schema, `C5_DIFFERENTIAL_DIAGNOSES` / `C5_OTHER_POSSIBLE_CONDITIONS` / `C5_REASONING_BASIS` / `C5_EXCLUSION_LIMITS` / `C5_INSUFFICIENT_DATA_NOTE` / `C5_NO_DIFFERENTIAL_NOTE` hoặc field tương đương thiếu/sai schema khi cần, C5 chưa tạo nội dung nhưng O13 được yêu cầu, C5_STATE mâu thuẫn/không phù hợp format O13, C5 có nhiều differential nhưng schema chưa tách bullet/list rõ, O13 cần tự bịa/tự tạo/tự thêm/tự bù mới render được, dùng source ngoài allowlist, dùng A/A12/A13/A14/A15/C1/C2/C3/C4/C6/C7/O output cũ/raw/hidden/web/patch-delta để bù, output sai schema, O13 tự tạo/bù differential/bệnh khác/căn cứ/giới hạn, biến differential thành chẩn đoán chính thức/y lệnh/hướng điều trị/đơn thuốc, lẫn O9/O10/O11/O12 hoặc render metadata kỹ thuật.
+
+O13_ERROR_RULE
+    Khi NEEDS_FIX/BLOCKED: không render bản O13 hoàn chỉnh, không tự tạo differential, không tự thêm bệnh, không tự tạo căn cứ/giới hạn, không tự sửa/chạy C5, không tự chạy A/C/O, không biến differential thành chẩn đoán chính thức/y lệnh/chỉ định/đơn thuốc và không fallback sang A/A12/A13/A14/A15/C1-C4/C6/C7/O output cũ/raw/hidden/web.
+    Nếu framework cần lỗi/check nội bộ: ghi lý do chặn theo framework, có thể dùng `C5_ERROR` làm lý do chặn, nhưng không render lỗi/check metadata vào output thường quy.
+    Lỗi phải nêu rõ nguyên nhân như O13 không nằm render plan, thiếu C5_STATE, C5_CHECK không PASS, C5_FINAL/field C5 thiếu/sai schema, C5_STATE mâu thuẫn, C5 differential không tách bullet/list rõ, dùng nguồn cấm, output sai schema, tự tạo differential/tự thêm bệnh hoặc lẫn O9/O10/O11/O12/A12/A13/A15.
+
+O13_REUSE_RULE
+    O13 không có lifecycle CREATE/UPDATE/REUSE state riêng theo contract hiện tại.
+    Không reuse O output cũ, `O13_OUTPUT` cũ, rendered output cũ hoặc patch/delta từ output cũ; khi G plan O13, render từ current allowed sources của ROUND hiện tại.
+    Nếu hệ thống có REUSE nội bộ, REUSE chỉ là metadata điều phối, không làm nguồn nội dung và không render thường quy; không ghi “reuse O13”, không tạo `O13_REV`, không tạo `O13_STATE`.
+
+O13_END
+    `<<< END O13` là marker kết thúc O13.
+    O13 là module cuối trong nhóm O nếu không có header O tiếp theo; O13 không tự gọi A/C, không sửa state và không sửa O khác.
+
+<<< END O13
+
+####################################################################################################

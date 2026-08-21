@@ -1,0 +1,1540 @@
+
+####################################################################################################
+
+C_MODULE_REGISTRY = {C1, C2, C3, C4, C5, C6, C7, C8}.
+C_RUN_ORDER là plan của ROUND hiện tại do G_STATE tạo; không có thứ tự C canonical/default toàn hệ thống.
+C1-C8 độc lập trừ dependency được khai báo rõ; không giả định thứ tự C toàn cục.
+
+C_CORE_SELECTIVE — LUẬT STEP C SELECTIVE VÀ C_GATE
+Version: BA S-G-A-C-O v3
+
+>>> READ-LOCK: C_CORE_SELECTIVE
+- STEP C chỉ chạy các Cx nằm trong C_RUN_ORDER của G_STATE.
+- Nếu C_RUN_ORDER = NONE, STEP C skip hợp lệ; không chạy, không cập nhật và không in Cx_STATE dạng SKIP.
+- Nếu Cx nằm trong C_RUN_ORDER, phải tạo/cập nhật/reuse Cx_STATE đầy đủ; không dùng patch/delta.
+- Nếu Cx không nằm trong C_RUN_ORDER, không chạy và không cập nhật Cx; Cx_STATE cũ nếu có giữ nguyên.
+- Mỗi Cx_STATE phải có Cx_REV riêng và Cx_SOURCE_A_REV ghi dependency-subset map các Ax_REV thực tế Cx đã dùng.
+- Layer C đã hoàn tất revision riêng theo từng module: C1 dùng C1_REV; C2 dùng C2_REV; C3 dùng C3_REV; C4 dùng C4_REV; C5 dùng C5_REV; C6 dùng C6_REV; C7 dùng C7_REV; C8 dùng C8_REV. Chưa tạo C_MODULE_REV chung.
+- C_GATE chỉ kiểm kỹ thuật các Cx_STATE nằm trong C_RUN_ORDER; C_GATE không tự chuyển STEP O.
+- Nếu một Cx đọc C7_STATE, dependency Cx requires C7 phải được khai báo rõ trong PLAN của G và C7 phải chạy trước Cx.
+<<< END READ-LOCK: C_CORE_SELECTIVE
+
+C_CORE_SELECTIVE.1. Quy tắc tạo mới / cập nhật / reuse Cx_STATE
+    Nếu Cx nằm trong C_RUN_ORDER và chưa có Cx_STATE cũ:
+        1. Đọc full current A_STATE; dùng A_MODULE_REV chỉ để locate/verify canonical Ax_REV, không copy aggregate làm Cx source map.
+        2. Tạo mới và in Cx_STATE đầy đủ.
+        3. Ghi Cx_SOURCE_A_REV theo các A module mà Cx đã dùng.
+    Nếu Cx nằm trong C_RUN_ORDER và đã có Cx_STATE cũ:
+        1. Bắt buộc đọc Cx_STATE hiện hành mới nhất.
+        2. Bắt buộc đọc full current A_STATE và A_MODULE_REV hiện tại.
+        3. Bắt buộc đọc Cx_SOURCE_A_REV cũ.
+        4. So sánh từng recorded member trong Cx_SOURCE_A_REV với current corresponding Ax_STATE.Ax_REV; relevant drift yêu cầu producer revalidation, còn unrecorded unrelated Ax drift không tự stale Cx.
+        5. Trước khi REUSE bất kỳ Cx_STATE cũ, bắt buộc revalidate theo schema/checklist hiện hành của chính Cx; Cx_CHECK cũ chỉ là dữ kiện tham khảo, không phải bằng chứng hợp lệ nếu nội dung không đạt contract hiện hành.
+        6. Với C4, không được REUSE chỉ vì C4_CHECK = PASS và C4_SOURCE_A_REV khớp; phải revalidate C4_FOR_O2 theo contract C4 hiện hành, nếu fail thì UPDATE hoặc NEEDS_FIX.
+        7. Cập nhật/reuse thành Cx_STATE mới đầy đủ và ghi Cx_SOURCE_A_REV hiện hành.
+        8. Không in patch/delta.
+
+C_CORE_SELECTIVE.2. Schema chung Cx_STATE
+    Mỗi Cx_STATE phải có:
+        STATE_VERSION = ...
+        Cx_REV = ...
+        Cx_SOURCE_A_REV:
+            Ax_REV_đã_dùng = current Ax_STATE.Ax_REV tương ứng
+        Các trường nội dung riêng của Cx.
+        Cx_CHECK = PASS / NEEDS_FIX
+        Cx_ERROR = ...
+
+C_CORE_SELECTIVE.3. C_GATE và kết thúc STEP C
+    C_GATE là selected-state validator/aggregator, chỉ duyệt đúng Cx trong current G_STATE.C_RUN_ORDER; không chạy, emit hoặc refresh unselected C. C_GATE không định nghĩa competing Cx content schema và không repair producer.
+    Nếu C_RUN_ORDER khác NONE, với mỗi selected Cx C_GATE validate:
+        1. Full Cx_STATE conform exact current producer Cx_STATE_SCHEMA; STATE_VERSION = current G_STATE.STATE_VERSION; Cx_REV/Cx_CHECK/Cx_ERROR hợp lệ.
+        2. Cx_SOURCE_A_REV conform local producer contract: dependency-subset map chỉ gồm declared/actual-used Ax_REV, trừ C6 genuinely A-independent dùng đúng một sentinel NONE hoặc NOT_APPLICABLE; sentinel không coexist map.
+        3. Mỗi recorded Ax_REV member bằng current corresponding Ax_STATE.Ax_REV. Recorded relevant drift bắt buộc direct Cx revalidation; unrecorded unrelated Ax drift không tự stale Cx.
+        4. C3 subset chứa ít nhất A15_REV. C7 subset chỉ có actual-used A1_REV/A14_REV. C8 subset chứa A15_REV và C8_SOURCE_A15_REV == C8_SOURCE_A_REV.A15_REV; mismatch là technical error.
+        5. Selected-set atomicity: mọi selected Cx phải PASS/NONE error và current-contract valid thì C_GATE_STATUS=PASS; một selected failure làm aggregate NEEDS_FIX và chặn O.
+    Canonical aggregate:
+        C_GATE_STATUS = PASS | NEEDS_FIX
+        C_GATE_ERROR = NONE | <selected direct owner và exact technical/producer error>
+        C_GATE_NEXT_STEP = <checkpoint prose | selected-C recovery | route A/A_GATE | exact WAIT_USER requirement>
+    C_GATE_STATUS là canonical barrier; confirmation không override failure; C_GATE_NEXT_STEP không phải S NEXT_ACTION. C_GATE không đánh giá lại/repair business content.
+    C-local AUTO_RECOVERABLE rerun/revalidate full current selected set same ROUND. A defect route A/A_GATE → full A → A_GATE PASS → full selected C → C_GATE. USER_INPUT_REQUIRED chỉ genuine non-fabricable need.
+    Nếu C_RUN_ORDER=NONE: valid skip, không inspect/emit Cx_STATE, rồi checkpoint C theo S. PASS vẫn dừng checkpoint; C_GATE không tự chạy O.
+
+C_CORE_SELECTIVE.4. Atomic selected-C recovery và owner routing
+    Atomicity của STEP C áp trên đúng current C_RUN_ORDER, không biến STEP C thành full C1-C8. Bất kỳ selected C non-PASS làm toàn selected STEP C non-PASS và chặn toàn STEP O cho đến khi C_GATE_STATUS = PASS.
+    Recovery selected STEP C là scheduling/revalidation lại toàn current C_RUN_ORDER, không bắt buộc regenerate semantic content hoặc tăng Cx_REV khi content không đổi; mọi REUSE vẫn phải qua current-contract revalidation tại C_CORE_SELECTIVE.1.
+    Owner routing: C-local error route C; invalid/stale/malformed/inconsistent upstream A hoặc A false-PASS route A/A_GATE. Consumer C không repair producer A. Sau A recovery phải rerun full A, require A_GATE_STATUS = PASS, sau đó rerun/revalidate full current C_RUN_ORDER và require C_GATE_STATUS = PASS.
+    Automatic recovery tuân anti-loop S_CORE: chỉ retry khi có tiến triển; cùng owner/source-revision/error/state không đổi không được lặp vô hạn.
+####################################################################################################
+
+C1 — HỎI THÊM / KHÁM THÊM / CẬN LÂM SÀNG BỔ SUNG / ĐÁNH GIÁ LẠI
+Version: BA S-G-A-C-O V4 compact allowlist
+Update: compact C1 V4 — ALLOWLIST MODE
+
+>>> READ-LOCK: C1
+- Bắt buộc đọc toàn bộ C1 compact từ C1_ROLE đến C1_END.
+- C1 chỉ chạy khi C1 nằm trong G_STATE.C_RUN_ORDER của ROUND hiện tại.
+- C1 chỉ tạo/cập nhật/reuse/check full C1_STATE; không tạo patch/delta.
+- C1 không sửa A/S/G/O hoặc C2-C7.
+<<< END READ-LOCK: C1
+
+C1_ROLE
+    C1 là module chuẩn hóa phần cần bổ sung để hoàn thiện đánh giá lâm sàng, gồm:
+        1. Hỏi thêm.
+        2. Khám thêm.
+        3. Xét nghiệm / chẩn đoán hình ảnh / thăm dò bổ sung cần làm hoặc cần kiểm tra lại.
+        4. Đánh giá lại.
+    C1 tạo C1_STATE để đưa vào current selective C_STATE của ROUND hiện tại.
+    C1_FINAL là nguồn chính thức cho O9 khi cần render phần hỏi thêm/khám thêm/cận lâm sàng bổ sung/đánh giá lại.
+    C1 chỉ nêu dữ kiện cần bổ sung, cần xác minh hoặc cần đánh giá lại.
+    C1 không tạo dữ liệu nguồn thay A, không sửa A_STATE, không render O, không viết chẩn đoán, không viết điều trị, không viết đơn thuốc, không viết cảnh báo lâm sàng cuối cùng, không viết cảnh báo an toàn thuốc cuối cùng, không tổng hợp bệnh án, không viết chẩn đoán phân biệt và không phải module outside-record.
+
+C1_ALLOWED_SOURCE
+    C1 chỉ được đọc khi C1 nằm trong G_STATE.C_RUN_ORDER:
+        1. G_STATE metadata kỹ thuật và C_RUN_ORDER của ROUND hiện tại để xác nhận C1 được chạy.
+        2. A_GATE mới nhất.
+        3. Full current A_STATE mới nhất sau A_GATE.
+        4. full current A_STATE để đọc canonical Ax_REV; C1_SOURCE_A_REV chỉ ghi actual Ax dependencies C1 đã dùng.
+        5. C1_STATE hiện hành mới nhất nếu đã có.
+        6. User input của ROUND hiện tại nếu liên quan trực tiếp tới yêu cầu C1; chỉ đọc để hiểu user đang hỏi gì hoặc đang yêu cầu bổ sung gì, không dùng để sửa trực tiếp A_STATE.
+        7. File/module C1.
+    C1 được đối chiếu A1_STATE đến A15_STATE theo phạm vi sau:
+        1. A1: lý do vào viện / vấn đề chính.
+        2. A2: tiền sử / dị ứng / thuốc.
+        3. A3: bệnh sử / triệu chứng.
+        4. A4-A11: khám theo hệ.
+        5. A12: chẩn đoán hiện tại cần làm rõ.
+        6. A13: hướng cần làm đã có để tránh lặp thừa.
+        7. A14: hành chính / cận lâm sàng đã có hoặc còn thiếu.
+        8. A15: dữ kiện thuốc / an toàn thuốc khi liên quan.
+    C1 không được đọc hoặc dùng:
+        1. C2-C7_STATE hiện hành trong cùng ROUND, trừ khi tương lai khai báo dependency C1 requires Cy rõ ràng trong G plan và xác định thứ tự chạy hợp lệ.
+        2. O_OUTPUT hoặc output đã render.
+        3. Hidden memory, trí nhớ ẩn, memory dài hạn hoặc dữ liệu ca bệnh khác.
+        4. Dữ liệu ngoài state hợp lệ.
+        5. Web/guideline ngoài nếu không thuộc user input hoặc contract C6 hợp lệ trong workflow bệnh án chính thức.
+        6. Kết quả xét nghiệm cần làm trong A13 như kết quả đã có.
+        7. Thuốc dự kiến trong A15 để kết luận an toàn thuốc.
+
+C1_ALLOWED_ACTION
+    C1 chỉ được làm:
+        1. CREATE C1_STATE.
+        2. UPDATE C1_STATE.
+        3. REUSE C1_STATE.
+        4. CHECK C1_STATE / C1_FINAL.
+        5. Chuẩn hóa nội dung cần hỏi thêm / khám thêm / xét nghiệm - chẩn đoán hình ảnh - thăm dò bổ sung / đánh giá lại.
+        6. Ghi C1_REV.
+        7. Ghi C1_SOURCE_A_REV.
+    C1 không được render O, không sửa A, không chạy A, không tạo/sửa C2-C7 và không tạo/sửa O.
+    User request, O9 yêu cầu, A_GATE_STATUS = PASS, A_STATE thay đổi hoặc dữ kiện thiếu không tự làm C1 chạy nếu G chưa đưa C1 vào C_RUN_ORDER.
+    Nếu O9 nằm trong O_RENDER_LIST thì G phải thêm C1 vào C_RUN_ORDER vì O9 requires C1; C1 chỉ ghi nhận dependency này, không tự sửa G.
+
+C1_ALLOWED_WRITE
+    C1 chỉ được ghi full C1_STATE.
+    C1 không được ghi A_STATE, A1-A15, C2-C7, O_OUTPUT, S/G hoặc C_MODULE_REV tổng hợp.
+    C1_STATE là full state, không patch/delta.
+    C1 không tự tạo C_MODULE_REV chung.
+    Nếu C1 không nằm trong C_RUN_ORDER:
+        1. Không chạy C1.
+        2. Không tạo C1_STATE.
+        3. Không cập nhật C1_STATE.
+        4. Không in C1_STATE.
+        5. Không tăng C1_REV.
+        6. Không cập nhật C1_SOURCE_A_REV.
+        7. C1_STATE cũ nếu có thì giữ nguyên ngoài lượt chạy.
+
+C1_STATE_SCHEMA
+    C1_STATE:
+        STATE_VERSION = ...
+        C1_REV = ...
+        C1_SOURCE_A_REV = <actual dependency-subset map các Ax_REV đã dùng>
+        C1_FINAL = ...
+        C1_CHECK = PASS / NEEDS_FIX
+        C1_ERROR = ...
+
+    C1_FINAL bắt buộc đủ đúng 4 nhóm, đúng tên, đúng thứ tự:
+        1. Hỏi thêm:
+            ...
+        2. Khám thêm:
+            ...
+        3. Xét nghiệm / chẩn đoán hình ảnh / thăm dò bổ sung:
+            ...
+        4. Đánh giá lại:
+            ...
+    Không được đổi tên nhóm, bỏ nhóm, gộp nhóm, đảo thứ tự nhóm, để nhóm trống, đổi thành tiếng khác hoặc đổi “Xét nghiệm / chẩn đoán hình ảnh / thăm dò bổ sung” thành tên ngắn hơn.
+    Nếu nhóm nào không có nội dung rõ, dùng đúng literal:
+        Không có nội dung cần bổ sung rõ trong nhóm này.
+    C1_STATE không có STATUS, UPDATED_AT, C1_FOR_O, C1_RENDER, C1_FINAL_READY hoặc field mới ngoài schema hiện tại.
+    C1_STATE không có trường lifecycle CREATE / UPDATE / REUSE.
+
+C1_LOGIC_RULES
+    C1 chỉ nêu phần cần bổ sung, cần xác minh hoặc cần đánh giá lại.
+    C1 không tạo dữ kiện nguồn.
+    C1 không biến thiếu dữ kiện thành dữ kiện âm tính, bình thường, đã có, đã làm hoặc đã loại trừ.
+    C1 không ghi kết quả xét nghiệm mới, kết quả hình ảnh mới, kết quả thăm dò mới, dấu khám mới, tiền sử mới, thuốc mới hoặc chẩn đoán mới.
+    C1 chỉ nêu “cần bổ sung”, “cần hỏi thêm”, “cần khám thêm”, “cần làm thêm”, “cần kiểm tra lại”, “cần xác minh” hoặc “cần đánh giá lại” khi phù hợp.
+    Nội dung C1_FINAL phải cụ thể theo bệnh cảnh, không liệt kê máy móc, không quá dài, không lan man và không lặp lại toàn bộ A13/A14 nếu không có giá trị bổ sung.
+    Nếu A_STATE thiếu hoặc mâu thuẫn, C1 ghi cần bổ sung hoặc cần xác minh; C1 không tự sửa A_STATE.
+    Nếu A_GATE_STATUS = NEEDS_FIX hoặc full current A_STATE thiếu mà C1 vẫn bị yêu cầu chạy, C1_CHECK = NEEDS_FIX và C1_ERROR ghi rõ thiếu nguồn bắt buộc.
+
+C1_FINAL_GROUP_RULES
+    Hỏi thêm:
+        Dùng cho dữ kiện cần khai thác thêm từ bệnh nhân hoặc hồ sơ: triệu chứng còn thiếu, thời gian, diễn biến, mức độ, yếu tố tăng/giảm, tiền sử liên quan, dị ứng, thuốc đang dùng, yếu tố nguy cơ và thông tin cần xác minh.
+        Không biến câu hỏi thêm thành kết luận, không viết lại bệnh sử chính thức và không kết luận âm tính nếu chưa có dữ kiện.
+    Khám thêm:
+        Dùng cho nội dung cần khám bổ sung: khám thực thể còn thiếu, khám hệ cơ quan liên quan, dấu khám cần kiểm tra lại và nghiệm pháp cần làm thêm nếu phù hợp.
+        Không ghi kết quả khám như đã có nếu chưa có, không thay A4-A11 và không dùng nhóm này để viết chẩn đoán/cảnh báo.
+    Xét nghiệm / chẩn đoán hình ảnh / thăm dò bổ sung:
+        Dùng cho nội dung xét nghiệm, chẩn đoán hình ảnh, thăm dò chức năng hoặc cận lâm sàng liên quan cần làm thêm hoặc cần kiểm tra lại.
+        Không ghi kết quả như đã có, không biến A13 “cần làm” thành A14 “đã có”, không tạo kết quả mới và không lặp lại A13/A14 nếu không có giá trị bổ sung.
+    Đánh giá lại:
+        Dùng cho nội dung cần đánh giá lại sau khi có thêm dữ kiện, sau khám thêm, sau cận lâm sàng hoặc sau xử trí ban đầu: chẩn đoán, mức độ, đáp ứng, nguy cơ, hướng xử trí và nhu cầu theo dõi/hội chẩn/chuyển tuyến nếu phù hợp.
+        Không viết chẩn đoán cuối cùng thay A12, không viết điều trị cuối cùng thay A13/A15, không viết cảnh báo cuối cùng thay C2 và không viết bệnh trình/tổng kết ra viện.
+
+C1_SPECIAL_RULES
+    Boundary A13 / A14:
+        1. C1 không thay A13 và không ghi hướng cần làm chính thức thay A13.
+        2. C1 không ghi kết quả A14 đã có như cần làm và không tạo kết quả A14 mới.
+        3. C1 không dùng xét nghiệm cần làm trong A13 như kết quả đã có.
+        4. C1 không lặp A13/A14 thừa nếu A13/A14 đã đủ.
+        5. C1 ưu tiên phần còn thiếu, phần cần xác minh, phần cần đánh giá lại và phần bổ sung có giá trị.
+    Boundary A12 / A15:
+        1. C1 không viết chẩn đoán cuối cùng thay A12.
+        2. C1 có thể nêu “cần đánh giá lại chẩn đoán” nếu thiếu dữ kiện, nhưng không chốt chẩn đoán thay A12.
+        3. C1 không viết đơn thuốc hoặc điều trị cuối cùng thay A15/A13.
+        4. C1 không kết luận an toàn thuốc cuối cùng.
+        5. C1 có thể nêu dữ kiện cần hỏi thêm liên quan an toàn thuốc nếu phù hợp, ví dụ dị ứng, thuốc đang dùng, bệnh nền liên quan hoặc chức năng gan thận nếu cần.
+    Boundary C2-C5:
+        1. C1 không làm thay C2 cảnh báo lâm sàng.
+        2. C1 không làm thay C3 cảnh báo thuốc / theo dõi thuốc.
+        3. C1 không làm thay C4 tổng hợp hội chứng / triệu chứng / bệnh án.
+        4. C1 không làm thay C5 chẩn đoán phân biệt.
+        5. C1 không đọc C2-C7_STATE hiện hành trong cùng ROUND theo mặc định.
+        6. Nếu tương lai cần dependency C1 requires Cy/C6/C7 thì phải khai báo rõ trong G plan và xác định thứ tự chạy hợp lệ; C1 không tự thêm dependency.
+    Boundary O9:
+        1. O9 đọc C1_FINAL để render.
+        2. O9 không tự tạo nội dung C1 nếu C1_FINAL thiếu.
+        3. O9 chỉ trình bày lại C1_FINAL theo format O9 và phải tôn trọng 4 nhóm.
+        4. Nếu C1_CHECK = NEEDS_FIX thì O9 xử lý theo O/C_GATE, không render như nội dung hoàn chỉnh.
+        5. C1 không render O9, không tự gọi O9 và không sửa O_OUTPUT.
+    PLAN_9 / outside-record:
+        1. PLAN_9 / outside-record không làm C1 chạy.
+        2. C1 không phải module trả lời outside-record.
+        3. C1 không ghi câu trả lời outside-record vào bệnh án.
+
+C1_CHECK_PASS_IF
+    C1_CHECK = PASS khi:
+        1. C1_STATE đúng schema.
+        2. C1_FINAL đủ 4 nhóm.
+        3. 4 nhóm đúng tên, đúng thứ tự và không trống.
+        4. Nhóm không có nội dung rõ dùng đúng literal no-data.
+        5. Từng nhóm đúng phạm vi.
+        6. Nội dung cụ thể theo bệnh cảnh, không liệt kê máy móc.
+        7. Không lẫn A12/A13/A15/C2/C3/C4/C5.
+        8. Không tạo dữ kiện mới.
+        9. Không biến thiếu dữ kiện thành phủ định, bình thường hoặc đã có.
+        10. Không lặp thừa A13/A14.
+        11. Không dùng nguồn ngoài allowlist.
+        12. C1_REV và C1_SOURCE_A_REV đúng theo lifecycle.
+        13. C1_ERROR = NONE khi PASS.
+
+C1_NEEDS_FIX_IF
+    C1_CHECK = NEEDS_FIX khi có một hoặc nhiều lỗi sau:
+        1. Thiếu nguồn bắt buộc: A_GATE_STATUS = PASS / full current A_STATE / A_MODULE_REV khi C1 bị yêu cầu chạy.
+        2. Thiếu field bắt buộc của C1_STATE.
+        3. Thiếu C1_FINAL.
+        4. C1_FINAL thiếu một trong 4 nhóm.
+        5. Đổi tên nhóm, đảo thứ tự nhóm, gộp nhóm hoặc để nhóm trống.
+        6. Sai literal no-data.
+        7. Nội dung lẫn chẩn đoán cuối cùng, điều trị, đơn thuốc, cảnh báo lâm sàng, cảnh báo thuốc, tổng hợp hoặc chẩn đoán phân biệt.
+        8. Nội dung ghi kết quả xét nghiệm / hình ảnh / thăm dò như đã có.
+        9. Nội dung tạo dữ kiện mới.
+        10. Nội dung biến thiếu dữ kiện thành phủ định hoặc bình thường.
+        11. Dùng nguồn ngoài allowlist.
+        12. REUSE state cũ nhưng không còn hợp contract hiện hành.
+        13. C1_REV hoặc C1_SOURCE_A_REV sai.
+        14. C1_ERROR không rõ khi NEEDS_FIX.
+        15. C1_ERROR không phải NONE khi PASS.
+
+C1_ERROR_RULE
+    Nếu C1_CHECK = PASS:
+        C1_ERROR = NONE.
+    Nếu C1_CHECK = NEEDS_FIX:
+        C1_ERROR ghi rõ lỗi cụ thể.
+    C1_ERROR phải nêu rõ lỗi thuộc nhóm:
+        1. Nguồn đọc.
+        2. C1_FINAL.
+        3. Hỏi thêm.
+        4. Khám thêm.
+        5. Xét nghiệm / chẩn đoán hình ảnh / thăm dò bổ sung.
+        6. Đánh giá lại.
+        7. Ranh giới với A/C/O.
+        8. Schema.
+    Không ghi lỗi chung chung nếu xác định được lỗi.
+
+C1_REUSE_RULE
+    CREATE / UPDATE / REUSE là lifecycle nội bộ của C1 sau khi C1 đã nằm trong G_STATE.C_RUN_ORDER; không phải RUN_MODE và không do G chọn.
+    CREATE C1_STATE:
+        1. Áp dụng khi C1 được chạy và chưa có C1_STATE hiện hành.
+        2. Tạo full C1_STATE.
+        3. C1_REV = 1.
+        4. C1_SOURCE_A_REV là dependency-subset map các Ax_REV thực tế đã dùng.
+        5. C1_FINAL đủ 4 nhóm.
+        6. C1_CHECK và C1_ERROR hợp lệ.
+    UPDATE C1_STATE:
+        1. Áp dụng khi C1 được chạy và nội dung thật thay đổi do full current A_STATE, user input hoặc dependency hợp lệ.
+        2. Đọc C1_STATE cũ nếu có.
+        3. Thay phần bị ảnh hưởng bằng nội dung mới.
+        4. Giữ phần không bị ảnh hưởng nếu vẫn còn đúng.
+        5. C1_REV tăng khi nội dung thật thay đổi.
+        6. C1_SOURCE_A_REV cập nhật theo actual dependency-subset đã dùng.
+        7. C1_FINAL vẫn đủ 4 nhóm.
+        8. Vẫn xuất full C1_STATE, không patch/delta.
+    REUSE C1_STATE:
+        1. Áp dụng khi C1 được chạy nhưng nội dung thật không đổi.
+        2. Dùng lại nội dung thật mới nhất sau khi revalidate theo contract C1 hiện hành.
+        3. Vẫn in full C1_STATE.
+        4. Giữ C1_REV.
+        5. C1_SOURCE_A_REV vẫn cập nhật theo actual dependency-subset current khi C1 chạy.
+        6. Không ghi “giữ nguyên như trước”.
+        7. Không ghi “reuse C1”.
+        8. Không ghi “theo bản trước”.
+        9. Không thay C1_FINAL bằng metadata.
+
+C1_REV_RULE
+    CREATE: C1_REV = 1.
+    UPDATE nội dung thật C1 thay đổi: C1_REV tăng.
+    REUSE hoặc recorded source metadata refresh nhưng semantic C1 content/CHECK/ERROR không đổi: C1_REV giữ nguyên; unrecorded unrelated Ax đổi không tự stale C1.
+    Khi C1 chạy, C1_SOURCE_A_REV cập nhật theo actual dependency-subset đã dùng.
+    Khi C1 không nằm trong C_RUN_ORDER: không chạy, không cập nhật C1_STATE, không tăng C1_REV và không cập nhật C1_SOURCE_A_REV.
+    C1 không tự tạo C_MODULE_REV chung.
+
+C1_END
+    C1 hoàn tất khi đã tạo mới, cập nhật hoặc dùng lại full C1_STATE; C1_FINAL đủ 4 nhóm; C1_CHECK/C1_ERROR hợp lệ; và C1 không tạo dữ liệu ngoài C1_STATE.
+    Sau C1_STATE, tiếp tục module C kế tiếp theo G_STATE.C_RUN_ORDER.
+    Nếu C1 là C cuối thì STEP C kết thúc hoặc chờ C_GATE theo C_CORE_SELECTIVE.
+    C1 không giả định C2 kế tiếp.
+    C1 không gọi C2-C7.
+    C1 không tự gọi/render O9.
+    C1 không chạy O.
+    C1 không sửa A.
+
+<<< END C1
+
+####################################################################################################
+
+C2 — CẢNH BÁO LÂM SÀNG / NGUY CƠ / THEO DÕI SÁT
+Version: BA S-G-A-C-O V4 compact allowlist
+Update: compact C2 V4 — ALLOWLIST MODE
+
+>>> READ-LOCK: C2
+- Bắt buộc đọc toàn bộ C2 compact từ C2_ROLE đến C2_END.
+- C2 chỉ chạy khi C2 nằm trong G_STATE.C_RUN_ORDER của ROUND hiện tại.
+- C2 chỉ tạo/cập nhật/reuse/check full C2_STATE; không tạo patch/delta.
+- C2 không sửa A/S/G/O hoặc C1/C3-C7, không chạy A, không render O/O10 và không tạo C_MODULE_REV.
+<<< END READ-LOCK: C2
+
+C2_ROLE
+    C2 là module chuẩn hóa cảnh báo lâm sàng, nguy cơ chuyển nặng, dấu hiệu cần theo dõi sát và tình huống cần xử trí kịp thời.
+    C2 xử lý:
+        1. Mức cảnh báo lâm sàng.
+        2. Dấu hiệu nguy hiểm / red flags.
+        3. Nguy cơ chuyển nặng.
+        4. Điểm cần theo dõi sát.
+        5. Tình huống cần đánh giá lại ngay.
+        6. Tình huống cần xử trí kịp thời.
+        7. Tình huống cần báo bác sĩ trực / bác sĩ điều trị.
+        8. Tình huống cần hội chẩn.
+        9. Tình huống cần chuyển tuyến / chuyển viện.
+        10. Tình huống cần theo dõi dấu hiệu sinh tồn sát hơn.
+        11. Tình huống cần đánh giá đáp ứng điều trị.
+        12. Tình huống cần chú ý diễn biến nặng lên.
+    C2 chỉ nêu cảnh báo, nguy cơ, điểm theo dõi và hành động cảnh báo dựa trên dữ kiện đã có trong nguồn hợp lệ.
+    C2 không tạo dữ kiện nguồn mới, không sửa A_STATE, không chạy A, không tạo/sửa C1 hoặc C3-C7, không render O, không viết đơn thuốc, không viết phác đồ điều trị/cấp cứu chi tiết, không thay A12/A13/A15/C3/C4/C5 và không trả lời ngoài bệnh án.
+    C2_STATE là nguồn chính thức cho output cảnh báo lâm sàng, đặc biệt O10 nếu G/O render O10.
+
+C2_ALLOWED_SOURCE
+    C2 chỉ được đọc:
+        1. User input ROUND hiện tại nếu liên quan trực tiếp tới yêu cầu C2.
+        2. G_STATE metadata kỹ thuật và C_RUN_ORDER để xác nhận C2 được chạy.
+        3. A_GATE mới nhất.
+        4. Full current A_STATE mới nhất sau A_GATE.
+        5. A_MODULE_REV từ A_GATE / full current A_STATE.
+        6. C2_STATE hiện hành mới nhất nếu đã có, dùng cho UPDATE/REUSE.
+        7. File/module C2.
+    C2 được đọc full current A_STATE A1-A15 theo mục đích:
+        1. A1: lý do vào viện / vấn đề chính.
+        2. A2: tiền sử, bệnh nền, dị ứng, thuốc đang dùng nếu liên quan nguy cơ.
+        3. A3: bệnh sử, triệu chứng chính, diễn biến ban đầu.
+        4. A4: toàn thân, tri giác, sinh tồn, tình trạng chung.
+        5. A5: tuần hoàn, mạch, huyết áp, dấu tim mạch.
+        6. A6: hô hấp, khó thở, SpO2/SpO₂, ran phổi, dấu suy hô hấp.
+        7. A7: tiêu hóa, đau bụng, nôn, tiêu chảy, xuất huyết tiêu hóa.
+        8. A8: thận - tiết niệu, tiểu tiện, đau hông lưng, phù, vô niệu/thiểu niệu.
+        9. A9: thần kinh, ý thức, co giật, yếu liệt, dấu thần kinh khu trú.
+        10. A10: cơ xương khớp, đau/sưng/giới hạn vận động, dấu viêm/nhiễm khuẩn.
+        11. A11: cơ quan khác liên quan.
+        12. A12: chẩn đoán hiện tại để biết bối cảnh nguy cơ; không sửa/chốt lại A12.
+        13. A13: hướng cần làm/hướng xử trí hiện có để tránh lặp/thừa và hiểu bối cảnh; không thay A13.
+        14. A14: thông tin hành chính và cận lâm sàng đã có; chỉ dùng bất thường rõ đã có để cảnh báo, không tạo kết quả mới.
+        15. A15: bối cảnh thuốc/đơn có thể liên quan bệnh cảnh; không kiểm an toàn thuốc thay A15 và không kết luận thuốc an toàn/không an toàn.
+    C2 không đọc/dùng O_OUTPUT, output đã render, output cũ để suy ngược cảnh báo, C1_STATE mặc định, C3-C7_STATE mặc định, hidden memory, dữ liệu ngoài state hợp lệ, thuốc dự kiến để kết luận an toàn thuốc, A13_LABS/A13_IMAGING như kết quả đã có, hoặc dữ kiện xét nghiệm/hình ảnh/thăm dò chưa có.
+    C2 không dùng web/guideline ngoài nếu không thuộc user input hoặc contract C6 hợp lệ.
+    Nếu tương lai cần dependency C2 requires C1/Cy, G phải khai báo rõ và audit riêng; patch này không tự thêm dependency.
+
+C2_ALLOWED_ACTION
+    C2 được làm:
+        1. CREATE full C2_STATE khi C2 được chạy và chưa có C2_STATE hiện hành.
+        2. UPDATE full C2_STATE khi nội dung thật C2 thay đổi do user input ROUND hiện tại hoặc full current A_STATE/dependency hợp lệ.
+        3. REUSE full C2_STATE khi C2 được chạy nhưng nội dung thật không đổi.
+        4. CHECK C2_STATE.
+        5. Chuẩn hóa C2_WARNING_LEVEL, C2_RED_FLAGS, C2_MONITORING_POINTS, C2_ACTION_ALERTS và C2_FINAL.
+        6. Ghi C2_REV và C2_SOURCE_A_REV.
+    C2 không render O/O10, không sửa A_STATE, không chạy A, không tạo state của C khác, không sửa C1/C3-C7, không tự tạo C_MODULE_REV, không tự kích hoạt module khác và không tự sửa G plan.
+    C2 chỉ chạy khi nằm trong G_STATE.C_RUN_ORDER theo C_CORE_SELECTIVE.
+    User request, O10 yêu cầu, A_STATE thay đổi hoặc dữ kiện nguy cơ chỉ là căn cứ để G lập plan; các yếu tố đó không tự làm C2 chạy nếu G chưa đưa C2 vào C_RUN_ORDER.
+    Nếu O10 nằm trong O_RENDER_LIST và O10 requires C2, G phải thêm C2 vào C_RUN_ORDER; C2 chỉ ghi nhận dependency này và không tự sửa G.
+
+C2_ALLOWED_WRITE
+    C2 chỉ được ghi full C2_STATE.
+    C2 không được ghi A_STATE, A1-A15, C1, C3-C7, O_OUTPUT, O10_OUTPUT, S/G hoặc C_MODULE_REV tổng hợp.
+    C2_STATE là full state, không patch/delta.
+
+C2_STATE_SCHEMA
+    C2_STATE:
+        STATE_VERSION = ...
+        C2_REV = ...
+        C2_SOURCE_A_REV = <actual dependency-subset map các Ax_REV đã dùng>
+        C2_WARNING_LEVEL = LOW / MODERATE / HIGH / CRITICAL / NOT_APPLICABLE
+        C2_RED_FLAGS = ...
+        C2_MONITORING_POINTS = ...
+        C2_ACTION_ALERTS = ...
+        C2_FINAL = ...
+        C2_CHECK = PASS / NEEDS_FIX
+        C2_ERROR = ...
+    Không thêm STATUS, UPDATED_AT, C2_FOR_O, C2_ALERTS, C2_WARNING, C2_RENDER, lifecycle field riêng hoặc field mới ngoài schema hiện tại.
+    Không bỏ STATE_VERSION, C2_REV, C2_SOURCE_A_REV, C2_WARNING_LEVEL, C2_RED_FLAGS, C2_MONITORING_POINTS, C2_ACTION_ALERTS, C2_FINAL, C2_CHECK hoặc C2_ERROR.
+    Nếu C2_CHECK = PASS: C2_ERROR = NONE.
+    Nếu C2_CHECK = NEEDS_FIX: C2_ERROR ghi lỗi cụ thể.
+
+C2_LOGIC_RULES
+    C2 chỉ nêu cảnh báo/nguy cơ/điểm theo dõi/hành động cảnh báo dựa trên dữ kiện đã có trong nguồn hợp lệ.
+    C2 không tạo dấu hiệu nặng mới, chỉ số sinh tồn mới, kết quả xét nghiệm/hình ảnh/thăm dò mới, chẩn đoán mới, thuốc mới hoặc điều trị cụ thể ngoài contract.
+    C2 không kết luận thuốc an toàn/không an toàn; không biến thiếu dữ kiện thành bình thường/an toàn; không biến nguy cơ thành chẩn đoán chắc chắn; không cảnh báo quá mức khi dữ kiện nhẹ/không đủ; không bỏ sót cảnh báo rõ khi dữ kiện đã cho thấy nguy hiểm.
+    Nếu thiếu dữ kiện để loại trừ nguy cơ, C2 phải ghi rõ chưa đủ dữ kiện và không ghi phủ định chắc chắn.
+    Nếu chưa có red flags rõ, dùng đúng literal: Chưa ghi nhận dấu hiệu nguy cơ rõ từ dữ kiện hiện có.
+    Không đổi literal trên thành “không có nguy cơ”, “không có red flag”, “hoàn toàn an toàn”, “loại trừ biến chứng” hoặc câu phủ định chắc chắn khác khi chưa đủ dữ kiện.
+    Nếu không áp dụng:
+        C2_WARNING_LEVEL = NOT_APPLICABLE
+        C2_RED_FLAGS = Không áp dụng
+        C2_MONITORING_POINTS = Không áp dụng
+        C2_ACTION_ALERTS = Không áp dụng
+        C2_FINAL ghi Không áp dụng trong các nhóm tương ứng.
+    C2 không xử lý nội dung hỏi thêm/khám thêm/làm thêm/đánh giá lại của C1; cảnh báo thuốc/tác dụng phụ/an toàn thuốc của C3; tổng hợp hội chứng/triệu chứng của C4; chẩn đoán phân biệt của C5; chẩn đoán hiện tại của A12; hướng điều trị thường quy của A13; đơn thuốc/thuốc của A15; bệnh trình; kết quả CLS mới; render output O; dặn dò cuối; phác đồ cấp cứu chi tiết; guideline ngoài record.
+
+C2_WARNING_LEVEL_RULES
+    C2_WARNING_LEVEL chỉ được là LOW / MODERATE / HIGH / CRITICAL / NOT_APPLICABLE; không dùng tiếng Việt tự do, mild/severe, cấp 1/cấp 2 hoặc giá trị khác.
+    LOW dùng khi nguy cơ nhẹ hoặc cần theo dõi thông thường, chưa có dấu hiệu nặng rõ và vẫn cần theo dõi phù hợp bệnh cảnh.
+    MODERATE dùng khi có nguy cơ vừa, cần theo dõi sát hơn, có dấu hiệu hoặc bệnh cảnh có thể chuyển nặng nhưng chưa đủ mức HIGH/CRITICAL.
+    HIGH dùng khi có dấu hiệu nguy cơ rõ, bệnh cảnh nặng hoặc khả năng chuyển nặng cao; cần đánh giá lại sớm, theo dõi sát, cân nhắc báo bác sĩ/hội chẩn tùy bối cảnh.
+    CRITICAL chỉ dùng khi có dữ kiện nguy kịch/cấp cứu/chuyển tuyến khẩn rõ; không dùng khi chỉ có triệu chứng nhẹ hoặc thiếu dữ kiện; không tự nâng CRITICAL nếu không có căn cứ.
+    NOT_APPLICABLE dùng khi C2 không áp dụng theo contract hoặc không có nội dung cảnh báo phù hợp; vẫn phải giữ schema đầy đủ và literal Không áp dụng tương ứng.
+
+C2_FINAL_RULES
+    C2_FINAL bắt buộc có đúng 4 nhóm, đúng tên, đúng thứ tự:
+        1. Mức cảnh báo:
+        2. Dấu hiệu nguy cơ cần lưu ý:
+        3. Điểm cần theo dõi sát:
+        4. Hành động cần cân nhắc nếu xuất hiện dấu hiệu nặng:
+    Không bỏ nhóm, đổi tên nhóm, gộp nhóm, đảo thứ tự, để nhóm trống hoặc đổi sang format khác.
+    Nhóm Mức cảnh báo phải khớp C2_WARNING_LEVEL.
+    Nhóm Dấu hiệu nguy cơ cần lưu ý phải khớp C2_RED_FLAGS.
+    Nhóm Điểm cần theo dõi sát phải khớp C2_MONITORING_POINTS.
+    Nhóm Hành động cần cân nhắc nếu xuất hiện dấu hiệu nặng phải khớp C2_ACTION_ALERTS.
+
+C2_SPECIAL_RULES
+    Red flags lấy từ A1/A3 lý do vào viện, triệu chứng, diễn biến; A2 bệnh nền/yếu tố nguy cơ; A4 tri giác/toàn trạng/sinh tồn/sốt/tình trạng nặng; A5 mạch/huyết áp/dấu tuần hoàn; A6 khó thở/SpO2/SpO₂/ran phổi/dấu suy hô hấp; A7 đau bụng/nôn/tiêu chảy/xuất huyết tiêu hóa; A8 tiểu tiện/đau hông lưng/phù/vô niệu/thiểu niệu; A9 ý thức/co giật/yếu liệt/dấu thần kinh khu trú; A10 đau/sưng/giới hạn vận động/dấu viêm nhiễm; A11 cơ quan khác; A12 bối cảnh chẩn đoán; A14 cận lâm sàng đã có nếu bất thường rõ; A15 bối cảnh thuốc/đơn nếu liên quan bệnh cảnh nhưng không kiểm thuốc.
+    Không lấy red flags từ bệnh trình module ngoài scope, output O, C1_FINAL, C3-C7 mặc định, xét nghiệm cần làm trong A13, dữ kiện chưa có hoặc hidden memory.
+    C2_MONITORING_POINTS là điểm cần theo dõi sát để phát hiện chuyển nặng; có thể gồm sinh tồn, tri giác, hô hấp/SpO2, tuần hoàn/huyết áp/mạch, đau/nguy cơ nặng lên, tiêu hóa/xuất huyết/nôn/tiêu chảy, thận-tiết niệu/lượng nước tiểu, thần kinh/co giật/yếu liệt, dấu nhiễm trùng/viêm và đáp ứng điều trị nếu có điều trị.
+    C2_MONITORING_POINTS không được biến thành bệnh trình, dặn dò cuối, hướng điều trị thường quy A13, phác đồ, đơn thuốc hoặc kết quả CLS mới.
+    C2_ACTION_ALERTS là hành động cảnh báo cần cân nhắc nếu xuất hiện dấu hiệu nặng; có thể gồm báo bác sĩ trực/bác sĩ điều trị, đánh giá lại ngay, theo dõi sinh tồn sát hơn, hội chẩn, chuyển tuyến/chuyển viện khi có chỉ định và xử trí kịp thời theo quy trình chuyên môn của cơ sở.
+    C2_ACTION_ALERTS không được viết phác đồ cấp cứu chi tiết, kê thuốc, thay A13_TREATMENT, thay A15, tự chặn thuốc, cho phép O6 xuất đơn hoặc tạo điều trị cụ thể ngoài dữ kiện/contract.
+    A14/CLS boundary: C2 có thể dùng bất thường rõ từ A14 để cảnh báo; không tạo xét nghiệm/hình ảnh/thăm dò mới, không dùng xét nghiệm cần làm trong A13 như kết quả đã có, không diễn giải sâu toàn bộ CLS thay C5/C4, không tự viết chẩn đoán từ CLS và không tạo chẩn đoán mới từ CLS.
+    Boundary C1: C1 là hỏi thêm/khám thêm/làm thêm/đánh giá lại; C2 là cảnh báo lâm sàng/nguy cơ/theo dõi sát. C2 không đọc/sao chép C1_FINAL mặc định, không biến nội dung cần hỏi thêm/khám thêm/làm thêm thành red flags, không biến nội dung C1 thành kết quả đã có và không thay C1 ghi nội dung cần bổ sung.
+    Boundary C3/A15: C2 không kết luận thuốc an toàn/không an toàn, không kết luận không có tương tác thuốc, không kết luận chống chỉ định thuốc, không chặn thuốc, không cho phép O6 xuất đơn, không thay C3 cảnh báo thuốc và không thay A15 điều trị/đơn thuốc.
+    Boundary C4/C5/A12: C2 không tổng hợp hội chứng/triệu chứng thay C4, không tạo chẩn đoán phân biệt thay C5, không chốt/chỉnh sửa chẩn đoán thay A12, không biến chẩn đoán A12 thành cảnh báo quá mức nếu không có căn cứ và không bỏ sót cảnh báo rõ nếu A12/bệnh cảnh cho thấy nguy cơ rõ.
+    Boundary A13: C2 không thay A13 hướng điều trị, không ghi hướng cần làm chính thức thay A13, không viết điều trị thường quy; C2 chỉ ghi hành động cảnh báo khi xuất hiện dấu hiệu nặng hoặc cần theo dõi/xử trí kịp thời.
+    PLAN_9/outside-record không làm C2 chạy; C2 không trả lời ngoài bệnh án, không đọc C6 trong PLAN_9 và không ghi nội dung outside-record vào bệnh án.
+
+C2_CHECK_PASS_IF
+    C2_CHECK = PASS khi:
+        1. C2_STATE đúng schema.
+        2. C2_WARNING_LEVEL thuộc enum hợp lệ và phù hợp dữ kiện.
+        3. C2_RED_FLAGS không bịa dữ kiện và không phủ định chắc chắn khi thiếu dữ kiện.
+        4. C2_MONITORING_POINTS đúng phạm vi.
+        5. C2_ACTION_ALERTS đúng phạm vi, không thay A13/A15/C3.
+        6. C2_FINAL đủ 4 nhóm đúng tên, đúng thứ tự, không trống và khớp các field nguồn.
+        7. Không tạo dữ kiện mới, không biến thiếu dữ kiện thành bình thường/an toàn, không cảnh báo quá mức khi thiếu căn cứ và không bỏ sót cảnh báo rõ.
+        8. Không lẫn C1/C3/C4/C5/A12/A13/A15/O.
+        9. Không dùng nguồn ngoài allowlist.
+        10. C2_REV và C2_SOURCE_A_REV đúng.
+        11. C2_ERROR = NONE.
+
+C2_NEEDS_FIX_IF
+    C2_CHECK = NEEDS_FIX khi có bất kỳ lỗi nào:
+        1. Thiếu nguồn bắt buộc A_GATE_STATUS = PASS/full current A_STATE/A_MODULE_REV khi C2 bị yêu cầu chạy.
+        2. Thiếu field schema.
+        3. C2_WARNING_LEVEL ngoài enum hoặc mâu thuẫn dữ kiện.
+        4. C2_RED_FLAGS bịa dữ kiện hoặc phủ định chắc chắn khi thiếu dữ kiện.
+        5. C2_MONITORING_POINTS sai phạm vi.
+        6. C2_ACTION_ALERTS sai phạm vi hoặc thay A13/A15/C3.
+        7. C2_FINAL thiếu một trong 4 nhóm, đổi tên, gộp, đảo thứ tự hoặc để trống nhóm.
+        8. Sai literal an toàn/no-data hoặc NOT_APPLICABLE.
+        9. Tạo dữ kiện mới, biến thiếu dữ kiện thành bình thường/an toàn, cảnh báo quá mức khi thiếu căn cứ hoặc bỏ sót cảnh báo rõ.
+        10. Lẫn nội dung C1/C3/C4/C5/A12/A13/A15/O.
+        11. Dùng nguồn ngoài allowlist.
+        12. REUSE state cũ nhưng không còn hợp contract hiện hành hoặc không in lại nội dung thật.
+        13. C2_REV/C2_SOURCE_A_REV sai.
+        14. C2_ERROR không rõ khi NEEDS_FIX hoặc C2_ERROR không phải NONE khi PASS.
+
+C2_ERROR_RULE
+    Nếu PASS: C2_ERROR = NONE.
+    Nếu NEEDS_FIX: C2_ERROR ghi rõ lỗi cụ thể.
+    C2_ERROR phải nêu lỗi thuộc nhóm: nguồn đọc; warning level; red flags; monitoring points; action alerts; C2_FINAL; ranh giới A/C/O; schema; revision/source revision.
+    Không ghi lỗi chung chung nếu xác định được lỗi.
+
+C2_REUSE_RULE
+    CREATE áp dụng khi C2 được chạy và chưa có C2_STATE hiện hành: tạo full C2_STATE, C2_REV = 1, C2_SOURCE_A_REV theo actual dependency-subset Ax_REV đã dùng, C2_FINAL đủ 4 nhóm, C2_CHECK/C2_ERROR hợp lệ.
+    UPDATE áp dụng khi C2 nằm trong C_RUN_ORDER và nội dung thật C2 thay đổi do user input ROUND hiện tại hoặc full current A_STATE/dependency hợp lệ: đọc C2_STATE cũ nếu có, thay phần bị ảnh hưởng, giữ phần không bị ảnh hưởng nếu còn đúng, tăng C2_REV, cập nhật C2_SOURCE_A_REV và vẫn xuất full C2_STATE.
+    REUSE áp dụng khi C2 được chạy nhưng nội dung thật không đổi: dùng lại nội dung thật mới nhất, vẫn in full C2_STATE, giữ C2_REV, refresh C2_SOURCE_A_REV theo actual used subset nếu recorded source metadata đổi nhưng nội dung thật không đổi.
+    Không ghi “giữ nguyên như trước”, “reuse C2”, “theo bản trước” hoặc thay C2_FINAL bằng metadata.
+
+C2_REV_RULE
+    CREATE: C2_REV = 1.
+    UPDATE khi nội dung thật đổi: tăng C2_REV.
+    REUSE hoặc nội dung thật không đổi: giữ C2_REV.
+    Recorded dependency metadata đổi nhưng semantic state không đổi: giữ C2_REV và refresh C2_SOURCE_A_REV theo actual used subset; unrecorded unrelated Ax đổi không tự stale C2.
+    C2_SOURCE_A_REV chỉ ghi actual used Ax_REV dependency subset; không copy aggregate source map.
+    Khi C2 không nằm trong C_RUN_ORDER: không chạy, không cập nhật C2_STATE, không tăng C2_REV và không cập nhật C2_SOURCE_A_REV.
+    C2 không tự tạo C_MODULE_REV.
+
+C2_END
+    C2 hoàn tất khi đã CREATE/UPDATE/REUSE full C2_STATE, C2_FINAL đủ 4 nhóm, C2_CHECK xác định PASS hoặc NEEDS_FIX, PASS thì C2_ERROR = NONE, NEEDS_FIX thì C2_ERROR rõ lỗi.
+    Sau C2, tiếp tục module C kế tiếp theo G_STATE.C_RUN_ORDER; không giả định C3 luôn là module kế tiếp.
+    C2 không gọi C1/C3-C7, không tự gọi/render O10, không chạy O, không sửa A và không sửa G.
+
+<<< END C2
+
+C3 — CÁCH DÙNG / ĐIỀU CHỈNH LIỀU / CẢNH BÁO VÀ THEO DÕI THUỐC
+Version: BA S-G-A-C-O V4 compact allowlist
+Update: 25/07/2026 GMT+7 — canonical A15_TO_C3 source / dosing / return-to-A15
+
+>>> READ-LOCK: C3
+- Bắt buộc đọc toàn bộ C3 từ C3_ROLE đến C3_END.
+- C3 chỉ chạy khi nằm trong G_STATE.C_RUN_ORDER và chỉ tạo full canonical C3_STATE.
+- Canonical medication source duy nhất là A15_STATE.A15_TO_C3.
+- C3 không chọn, thêm, bỏ, đổi thuốc hoặc treatment target; không sửa A15; không render O11.
+<<< END READ-LOCK: C3
+
+C3_ROLE
+    C3 nhận thuốc cuối cùng A15 đã chọn, tạo cách dùng và điều chỉnh liều cho từng thuốc, tạo tác dụng phụ/cảnh báo, vấn đề theo dõi và lời dặn an toàn.
+    C3 được dùng kiến thức chuyên môn nội tại cho nội dung thuốc nhưng không biến kiến thức chung thành dữ kiện bệnh nhân giả.
+
+C3_ALLOWED_SOURCE
+    C3 chỉ đọc:
+        1. G_STATE cho STATE_VERSION, C_RUN_ORDER và metadata kỹ thuật.
+        2. A_GATE hợp lệ, full current A_STATE, A_MODULE_REV.
+        3. A15_STATE hiện hành với A15_CHECK=PASS, A15_ERROR=NONE.
+        4. Canonical A15_STATE.A15_TO_C3 là nguồn medication duy nhất.
+        5. C3_STATE hiện hành cho UPDATE/REUSE.
+        6. File/module C3.
+    C3 không đọc standalone/orphan A15_TO_C3, không fallback A15_MEDICATION_LIST, không dùng user input trực tiếp để tự chọn thuốc, không đọc O/rendered output/C khác/hidden memory làm source; không đọc C8_STATE hoặc dùng O5 output.
+    C3 phải xác nhận A15_HAS_MEDICATION, A15_MEDICATION_LIST và A15_TO_C3 nhất quán; handoff thuộc current source revision; mỗi item đủ structure; không có thuốc ngoài handoff; MEDICATION + IDENTIFYING_FORM_OR_STRENGTH phải cho product identity đủ để xác định duy nhất một canonical regimen family. `NOT_REQUIRED` chỉ hợp lệ khi medication identity đã đủ mà không cần thêm identity-defining form/fixed strength.
+
+C3_ALLOWED_ACTION
+    C3 được CREATE/UPDATE/REUSE/CHECK full C3_STATE; tạo instruction, adjustment, adverse effects, monitoring và advice cho đúng thuốc trong handoff. Khi product identity và current facts đủ, C3 phải dùng kiến thức chuyên môn được phép để chọn một actionable canonical regimen, gồm regimen-used strength, dose, frequency, ordinary route, timing, duration, maximum và adjustment khi applicable; nhiều standard strengths/doses/schedules không tự động là USER_INPUT_REQUIRED.
+    C3 không thêm/bỏ/đổi hoạt chất, phối hợp, thuốc, action hoặc treatment target; không tạo thuốc thay thế cho O5; không dùng ứng viên A15 loại; không sửa A15_STATE/A15_TO_C3; không đọc C8_STATE, không dùng O5 output và không tự chạy A15/O11 hoặc module khác.
+
+C3_ALLOWED_WRITE
+    C3 chỉ ghi full canonical C3_STATE. C3 không ghi A/G/S/O hoặc state module khác.
+
+C3_STATE_SCHEMA
+    C3_STATE có đúng field:
+        STATE_VERSION: <G_STATE.STATE_VERSION>
+        C3_REV: <revision nội dung thật>
+        C3_SOURCE_A_REV: <dependency-subset map, bắt buộc có A15_REV>
+        C3_SOURCE_MEDICATION_FROM_A15: <normalized read-only copy/reference từ A15_STATE.A15_TO_C3 | NONE>
+        C3_MEDICATION_INSTRUCTIONS: <per-medication instructions | NOT_APPLICABLE_NO_MEDICATION>
+        C3_DOSE_ADJUSTMENT_RULES: <per-medication adjustment rules | NOT_APPLICABLE_NO_MEDICATION>
+        C3_ADVERSE_EFFECT_WARNINGS: <per-medication warnings | NOT_APPLICABLE_NO_MEDICATION>
+        C3_MONITORING_POINTS: <monitoring points | NONE>
+        C3_PATIENT_ADVICE: <patient advice | NONE>
+        C3_RETURN_TO_A15: NONE | <structured return request>
+        C3_CHECK: PASS | NEEDS_FIX
+        C3_ERROR: NONE | <specific error>
+    Không có C3_FINAL hoặc legacy content alias ngoài schema này.
+
+C3_SOURCE_MEDICATION_FROM_A15_RULE
+    Bảo toàn MEDICATION, identifying form/strength, SOURCE, ACTION, TREATMENT_TARGET và replacement relation từ canonical handoff; không tự đổi identity hoặc thêm item. Nếu identity không đủ, field thiếu/malformed/stale/mismatch hoặc C3 phải chọn giữa product identity/regimen family khác nhau, đây là upstream A15 producer defect: C3_CHECK=NEEDS_FIX, C3_ERROR=UPSTREAM_A15_PRODUCT_IDENTITY_OR_HANDOFF_INVALID, C3_RETURN_TO_A15=NONE và route A/A_GATE theo C_CORE/S_CORE; C3 không repair identity.
+
+C3_MEDICATION_INSTRUCTIONS_RULE
+    Mỗi thuốc handoff có đúng một item:
+        MEDICATION
+        STRENGTH_USED
+        DOSE_PER_ADMINISTRATION
+        ROUTE
+        FREQUENCY
+        TIMING
+        DURATION
+        MAXIMUM_DOSE
+        CONDITIONAL_USE_NOTE
+    Không có thuốc ngoài handoff. Field không áp dụng dùng NOT_APPLICABLE; giới hạn không cần dùng NOT_REQUIRED. Không bỏ trống hoặc dùng câu chung chung không hành động được. Khi source identity đủ, thiếu STRENGTH_USED/DOSE_PER_ADMINISTRATION/ROUTE/FREQUENCY/TIMING/DURATION hoặc việc C3 chưa chọn được một standard regimen trong phạm vi chuyên môn của mình là C3-local defect; không route A, không active C3_RETURN_TO_A15 và không hỏi user chỉ để né completion.
+
+C3_DOSE_ADJUSTMENT_RULES_RULE
+    Mỗi thuốc có item:
+        MEDICATION
+        APPLIES = YES | NO
+        ADJUSTMENT_FACTOR
+        STANDARD_REGIMEN
+        CONDITION_OR_RANGE
+        ADJUSTED_REGIMEN
+        MAXIMUM_DOSE
+        NON_USE_THRESHOLD
+        ACTUAL_DOSE_NOTE
+    Nếu APPLIES=NO, field còn lại dùng NOT_APPLICABLE_STANDARD_FIXED_DOSE khi phù hợp.
+    Nếu APPLIES=YES, phải ghi yếu tố, điều kiện/khoảng và ngưỡng cụ thể, standard regimen, từng adjusted regimen với liều và tần suất/khoảng cách cụ thể, maximum khi áp dụng, non-use threshold khi có, và actual-dose note.
+    Cấm wording đứng một mình: “điều chỉnh theo chức năng thận”, “giảm liều khi suy thận”, “cân nhắc giảm liều”, “dùng theo cân nặng”, “điều chỉnh theo chức năng gan”, “tham khảo hướng dẫn sử dụng”, “chỉnh liều tùy tình trạng”.
+
+C3_MISSING_INDIVIDUAL_FACTOR_RULE
+    Khi thiếu cân nặng, diện tích da, tuổi, eGFR, độ thanh thải creatinin, chức năng gan hoặc yếu tố cá thể: không bịa, không chọn nhánh giả định, không tạo liều tuyệt đối từ bệnh nhân giả và không tự động NEEDS_FIX chỉ vì thiếu giá trị.
+    C3 ghi công thức hoặc toàn bộ nhánh/ngưỡng thuốc-specific, liều/tần suất/khoảng cách/maximum/non-use threshold khi áp dụng, và ghi liều thực tế phụ thuộc giá trị thật của người bệnh.
+
+C3_WARNING_MONITORING_ADVICE_RULES
+    C3_ADVERSE_EFFECT_WARNINGS gắn với thuốc/nhóm phù hợp, gồm tác dụng phụ thường gặp, nghiêm trọng và dấu hiệu cần ngừng/đánh giá ngay khi phù hợp; không đổi thuốc.
+    C3_MONITORING_POINTS gắn thông số/triệu chứng và thời điểm/tần suất khi xác định được; không tạo kết quả giả.
+    C3_PATIENT_ADVICE gồm cách dùng an toàn, thời điểm, sinh hoạt/thức ăn khi phù hợp, dấu hiệu khám lại/cấp cứu; không cảnh báo ngoài thuốc handoff.
+
+C3_NO_MEDICATION_RULE
+    No-medication PASS chỉ khi đồng thời A15_HAS_MEDICATION=NO, A15_MEDICATION_LIST=NONE, A15_STATE.A15_TO_C3=NONE:
+        C3_SOURCE_MEDICATION_FROM_A15 = NONE
+        C3_MEDICATION_INSTRUCTIONS = NOT_APPLICABLE_NO_MEDICATION
+        C3_DOSE_ADJUSTMENT_RULES = NOT_APPLICABLE_NO_MEDICATION
+        C3_ADVERSE_EFFECT_WARNINGS = NOT_APPLICABLE_NO_MEDICATION
+        C3_MONITORING_POINTS = NONE
+        C3_PATIENT_ADVICE = NONE
+        C3_RETURN_TO_A15 = NONE
+        C3_CHECK = PASS
+        C3_ERROR = NONE
+    Nếu A15_HAS_MEDICATION=YES nhưng canonical handoff thiếu/NONE/rỗng/malformed/stale/không khớp final list hoặc product identity không đủ cho một canonical regimen family: C3_CHECK=NEEDS_FIX; C3_ERROR=UPSTREAM_A15_PRODUCT_IDENTITY_OR_HANDOFF_INVALID; C3_RETURN_TO_A15=NONE; route direct A/A_GATE để generic same-request producer recovery theo C_CORE/S_CORE; không vào no-medication PASS và không chuyển defect này thành user-mediated return.
+
+C3_RETURN_TO_A15_RULE
+    C3_RETURN_TO_A15 = NONE hoặc item:
+        MEDICATION
+        REASON_CLASS = EXTERNAL_PATIENT_FACT_REQUIRED | EXPLICIT_USER_DOCTOR_CONSTRAINT_OR_DECISION_REQUIRED | NO_SAFE_CANONICAL_SELECTION_WITHOUT_NEW_INPUT
+        KNOWN_BLOCKING_FACT
+        REQUIRED_EXTERNAL_INPUT
+        REQUIRED_A15_ACTION = RECHECK_MEDICATION | REPLACE_MEDICATION
+    Chỉ active khi đồng thời: C3 không thể tạo safe regimen trong thẩm quyền C3; vấn đề thực sự thuộc medication selection/reselection; đây không chỉ là missing/malformed/stale/inconsistent/false-PASS A15 source; A15 không thể rebuild/recheck/replace/select safe canonical medication/product từ current canonical facts và professional authority hiện hành; cần một non-fabricable user/bác sĩ fact, explicit constraint hoặc explicit decision mới; và không có owner-authorized same-request completion path. REQUIRED_EXTERNAL_INPUT phải nêu exact thông tin/quyết định cần cung cấp.
+    C3_RETURN_TO_A15 không active cho invalid/rebuildable A15 handoff, identity-incomplete product mà A15 có thể resolve, C3-local regimen field, missing individual factor có thể dùng formula/branches, hoặc chỉ vì cần recheck/replace thuốc mà A15 DEFAULT_COMPLETION có thể thực hiện từ current facts. `REBUILD_A15_TO_C3` là generic professional producer recovery action, không phải special-return action; `RECHECK_MEDICATION`/`REPLACE_MEDICATION` chỉ nằm trong return khi external input thực sự bắt buộc.
+    Nếu C3 chứng minh current medication không có safe regimen, unsafe với known patient factor hoặc cần replacement nhưng A15 có thể recheck/replace từ current facts, C3_RETURN_TO_A15=NONE và route A/A_GATE same request; `NO_SAFE_REGIMEN_FOR_KNOWN_STATE` hoặc `MEDICATION_REPLACEMENT_REQUIRED` không tự động đồng nghĩa user/bác sĩ phải chọn.
+    Khi active: C3_CHECK=NEEDS_FIX, C3_ERROR khớp medication/reason, C3 không đổi thuốc/không PASS và O11 không render hoàn chỉnh.
+    User-mediated next ROUND: khi return active, orchestration dừng O11 và trình structured return request cho user/bác sĩ để xác nhận hoặc chỉnh thuốc; orchestration không chọn thuốc và không sửa A15.
+    Chỉ current user input mới của ROUND sau là source hợp lệ để A15 chạy lại. Sau xác nhận/chỉnh sửa, A15 tăng A15_REV, tạo A15_TO_C3 mới rồi C3 mới được rerun. Nếu chưa có current user input mới, không chạy A15/C3 lại và state giữ NEEDS_FIX.
+    Anti-loop: C3 không tự chạy A15 và A15 không đọc trực tiếp C3_STATE. Genuine return không rerun trước external input; nhưng generic producer recovery do S/C_CORE điều phối được phép chạy một cycle C3→full A/A_GATE→full current C_RUN_ORDER khi state/revision/error có demonstrable progress. Chỉ cấm retry lặp lại không tiến triển.
+
+C3_CHECK_PASS_IF
+    PASS chỉ khi selected; canonical source/current revision hợp lệ; every handoff medication có instruction và adjustment item; không có thuốc ngoài handoff; adjustment áp dụng có rule hành động đủ cụ thể; không bịa patient factor; không đổi thuốc; warning/monitoring/advice hợp lệ; C3_RETURN_TO_A15=NONE; full schema/revision đúng; C3_ERROR=NONE.
+
+C3_NEEDS_FIX_IF
+    NEEDS_FIX khi source/handoff thiếu/sai; medication YES nhưng handoff NONE/rỗng; product identity không đủ; thiếu instruction/adjustment item; instruction field bỏ trống; adjustment chung chung; bịa patient factor; thêm/bỏ/đổi thuốc; không thể tạo cách dùng an toàn từ dữ kiện đã biết; return active; schema/revision sai; hoặc CHECK/ERROR pair sai. Upstream A defect dùng C3_RETURN_TO_A15=NONE và route A/A_GATE; C3-local incomplete regimen route C recovery; chỉ genuine external-input-required condition mới active return.
+
+C3_ERROR_RULE
+    PASS => C3_ERROR=NONE. NEEDS_FIX => lỗi cụ thể theo source, schema, medication, instruction, adjustment, fabricated patient factor, return-to-A15 hoặc boundary.
+
+C3_LIFECYCLE_RULE
+    CREATE tạo full state, C3_REV=1. UPDATE tăng C3_REV khi source medication, instructions, adjustment, warnings, monitoring, advice, return, check hoặc error đổi. REUSE chỉ khi toàn bộ nội dung còn hợp lệ/không đổi; vẫn in full state; giữ C3_REV và cập nhật C3_SOURCE_A_REV khi cần.
+    Không patch/delta hoặc reuse rendered output.
+
+C3_END
+    C3 hoàn tất khi full canonical state/check/error/return/lifecycle hợp lệ; không tự gọi O11, không sửa A/G và không giả định module C kế tiếp.
+<<< END C3
+
+
+####################################################################################################
+
+C4.1. Nhiệm vụ của C4
+Version: BA S-G-A-C-O V4 compact allowlist
+Update: compact C4 V4 — ALLOWLIST MODE, giữ C4_ITEMS và C4_FOR_O2 render-ready
+
+>>> READ-LOCK: C4
+- Bắt buộc đọc toàn bộ C4 compact từ C4_ROLE đến C4_END.
+- C4 là module C selective; chỉ chạy khi C4 nằm trong G_STATE.C_RUN_ORDER của ROUND hiện tại.
+- C4 chỉ tạo/cập nhật/reuse/check full C4_STATE; không tạo patch/delta.
+- C4 tạo C4_ITEMS trước rồi render C4_FOR_O2 từ C4_ITEMS; C4_FOR_O2 không được viết tự do trực tiếp.
+- C4_FOR_O2 là body render-ready để O2 copy nguyên văn; C4 không render O2, không tạo tiêu đề/câu mở đầu O2.
+- C4 không sửa A/S/G/O hoặc C1-C3/C5-C7.
+<<< END READ-LOCK: C4
+
+C4_ROLE
+    C4 là module C selective dùng để tổng hợp Hội chứng, Triệu chứng và Cận lâm sàng rời đã có để phục vụ O2.
+    Khi C4 nằm trong G_STATE.C_RUN_ORDER, C4 tạo full C4_STATE để đưa vào current selective C_STATE của ROUND hiện tại.
+    C4 phải tạo C4_ITEMS trước, sau đó render C4_FOR_O2 từ C4_ITEMS.
+    C4_FOR_O2 không được viết tự do trực tiếp từ cảm tính, đoạn văn tự do, output cũ hoặc rendered output.
+    O2 chỉ đọc/copy C4_FOR_O2; O2 không tự chọn lại hội chứng, không render lại từ C4_ITEMS và không tự sắp xếp lại nội dung.
+    C4 không render O2, không tạo tiêu đề/câu mở đầu O2, không tạo O_OUTPUT và không render output cuối.
+    C4 không tạo chẩn đoán, hướng điều trị, bệnh trình, thuốc/đơn thuốc, cảnh báo hoặc chẩn đoán phân biệt.
+
+C4_ALLOWED_SOURCE
+    C4 chỉ được đọc nguồn khi C4 nằm trong G_STATE.C_RUN_ORDER của ROUND hiện tại.
+    Nguồn được đọc:
+        1. G_STATE metadata kỹ thuật và C_RUN_ORDER, chỉ để xác nhận C4 được chạy.
+        2. A_GATE hợp lệ.
+        3. Full current A_STATE sau A_GATE.
+        4. A_MODULE_REV từ A_GATE / full current A_STATE.
+        5. A14_STATE trong full current A_STATE cho kết quả cận lâm sàng đã có.
+        6. Current/latest C4_STATE nếu đã có, chỉ để CREATE / UPDATE / REUSE.
+        7. File/module C4.
+    C4 đọc full current A_STATE, không đọc A_STATE patch/delta.
+    A14_STATE là nguồn canonical cho kết quả xét nghiệm, chẩn đoán hình ảnh, nội soi, điện tim và thăm dò đã có.
+    A12_STATE có thể nằm trong full current A_STATE nhưng không được bê chẩn đoán thay hội chứng và không bê ICD/bệnh nền/tiền sử thành C4 nếu không có biểu hiện hiện tại.
+    A13_STATE có thể nằm trong full current A_STATE nhưng không được dùng chỉ định cần làm như kết quả đã có; không dùng A13_LABS, A13_IMAGING hoặc A13_TREATMENT làm kết quả đã có.
+    A15_STATE không phải nguồn riêng của C4; không dùng thuốc/đơn thuốc để tạo C4.
+    Nguồn cấm: O_OUTPUT, output đã render, C_STATE khác mặc định, C1_STATE/danh sách “cần làm” của C1 làm kết quả đã có, C2 cảnh báo lâm sàng để biến thành hội chứng, C3 làm cận lâm sàng, C5_STATE/chẩn đoán phân biệt để biến thành hội chứng/triệu chứng, hidden memory/trí nhớ ẩn, dữ liệu ngoài state hợp lệ, web/guideline/source ngoài và A_STATE patch/delta.
+
+C4_ALLOWED_ACTION
+    C4 được CREATE / UPDATE / REUSE / CHECK full C4_STATE.
+    Khi chạy, C4 thực hiện pipeline bắt buộc:
+        1. Đọc full current A_STATE sau A_GATE và current canonical Ax_STATE.Ax_REV cần dùng.
+        2. So khớp dữ kiện thật với C4_SYNDROME_DICTIONARY.
+        3. Chọn TYPE hợp lệ: Hội chứng / Triệu chứng / Cận lâm sàng.
+        4. Tạo C4_ITEMS theo schema chuẩn.
+        5. Render C4_FOR_O2 từ C4_ITEMS theo format render-ready.
+        6. Kiểm C4_CHECK cho schema, source boundary, dictionary semantic validation, duplicate cận lâm sàng, render format, TYPE_GROUP_ORDER và REV/source REV.
+        7. Ghi C4_REV và C4_SOURCE_A_REV theo C4_REV_RULE.
+    C4 không được tạo chẩn đoán, sửa A12, tạo hướng điều trị, tạo thuốc/đơn thuốc, kiểm thuốc, tạo bệnh trình, tạo cảnh báo, tạo chẩn đoán phân biệt, sửa A_STATE, sửa state C khác, tạo C5_STATE, render O2/O, sửa G plan, tự chạy module khác hoặc tự gọi O2.
+
+C4_ALLOWED_WRITE
+    C4 chỉ được ghi full C4_STATE.
+    C4_STATE chỉ gồm các field trong C4_STATE_SCHEMA; không tự mở rộng schema và không dùng patch/delta.
+    C4 không được ghi A_STATE, A1-A15, C1-C3, C5-C7, G_STATE, O_OUTPUT, O2, S/G, C_GATE trực tiếp hoặc C_MODULE_REV trực tiếp nếu contract chung không cho phép.
+    C4 không tạo C4_FOR_O3, C4_FOR_O7, C4_PROBLEM_LIST, C4_FINAL, C4_OUTPUT, C4_RENDER, C5_STATE hoặc field mới ngoài schema hiện tại.
+
+C4_STATE_SCHEMA
+    C4_STATE:
+        STATE_VERSION = ...
+        C4_REV = ...
+        C4_SOURCE_A_REV = <actual dependency-subset map các Ax_REV đã dùng>
+        C4_ITEMS:
+            C4_ITEM_N:
+                TYPE = Hội chứng / Triệu chứng / Cận lâm sàng
+                NAME = ...
+                ORDER = ...
+                LÂM_SÀNG: ... / NONE
+                CẬN_LÂM_SÀNG: ... / NONE
+                ITEM_CHECK = PASS / NEEDS_FIX
+                ITEM_ERROR = NONE / ...
+        C4_FOR_O2:
+            - ...
+        C4_CHECK = PASS / NEEDS_FIX
+        C4_ERROR = NONE / ...
+    C4_ITEMS là cấu trúc nội dung chuẩn, không phải output cuối.
+    Mỗi C4_ITEM phải có TYPE, NAME, ORDER, LÂM_SÀNG, CẬN_LÂM_SÀNG, ITEM_CHECK và ITEM_ERROR.
+    LÂM_SÀNG và CẬN_LÂM_SÀNG bắt buộc dùng dấu hai chấm đúng field “LÂM_SÀNG:” và “CẬN_LÂM_SÀNG:”; không dùng dấu bằng cho hai field này.
+    Nếu không có lâm sàng thì ghi LÂM_SÀNG: NONE; nếu không có cận lâm sàng thì ghi CẬN_LÂM_SÀNG: NONE.
+    Item có cả LÂM_SÀNG và CẬN_LÂM_SÀNG đều NONE không được PASS và phải bỏ hoặc NEEDS_FIX.
+    Không dùng schema cũ TRIỆU_CHỨNG_CƠ_NĂNG / TRIỆU_CHỨNG_THỰC_THỂ và không dùng dạng list “ID = C4_ITEM_01”; bắt buộc dùng block C4_ITEM_N.
+    Nếu C4_CHECK = PASS thì C4_ERROR = NONE; nếu C4_CHECK = NEEDS_FIX thì C4_ERROR phải ghi rõ lỗi.
+
+C4_LOGIC_RULES
+    C4_SYNDROME_DICTIONARY — NAME canonical exact-match duy nhất cho TYPE = Hội chứng:
+        1. Hội chứng cổ vai cánh tay
+        2. Hội chứng viêm khớp
+        3. Hội chứng thắt lưng hông
+        4. Hội chứng tiền đình
+        5. Hội chứng viêm dạ dày tá tràng
+        6. Hội chứng tăng glucose máu
+    Cấm viết biến thể, tên gần đúng, tên theo vị trí/tổn thương tự do hoặc thêm hội chứng ngoài danh sách.
+    Tên bị cấm gồm: Hội chứng dạ dày - thực quản; Hội chứng cơ xương khớp; Hội chứng đau khớp gối; Hội chứng thoái hóa khớp gối; Hội chứng đau cột sống thắt lưng; Hội chứng thần kinh; Hội chứng hô hấp; Hội chứng nhiễm trùng / viêm; Hội chứng chuyển hóa / huyết áp / huyết học; Hội chứng tăng đường huyết; Hội chứng rối loạn tiền đình; Hội chứng cổ vai gáy; hoặc biến thể tương đương ngoài dictionary.
+
+    Rule phân loại:
+        1. C4 tạo hội chứng khi dữ kiện thật match trigger hội chứng chuẩn; TYPE = Hội chứng và NAME = canonical exact literal.
+        2. Nếu dữ kiện match trigger hội chứng chuẩn thì không được hạ xuống TYPE = Triệu chứng hoặc TYPE = Cận lâm sàng.
+        3. C4 tạo triệu chứng rời chỉ khi có triệu chứng thật cần đưa vào O2 nhưng không đủ điều kiện vào 6 hội chứng chuẩn.
+        4. C4 tạo cận lâm sàng rời chỉ khi có kết quả đã có từ A14_STATE và kết quả đó không ghép trực tiếp vào hội chứng nào.
+        5. C4 phải gộp lâm sàng theo cơ quan/vị trí thành một dòng ngắn gọn khi có thể.
+        6. C4 phải gộp xét nghiệm liên quan hội chứng vào tối đa 1 dòng xét nghiệm trong hội chứng.
+        7. C4 phải gộp chẩn đoán hình ảnh/thăm dò liên quan hội chứng vào tối đa 1 dòng trong hội chứng.
+        8. Không bê nguyên chẩn đoán A12, bệnh nền, tiền sử hoặc ICD nền thay hội chứng hiện tại.
+        9. Không dùng “nghi”, “theo dõi”, “hướng tới”, “phù hợp”, “chưa loại trừ” hoặc “có khả năng” trước/tại NAME hội chứng hoặc trong C4_FOR_O2.
+
+    Trigger và rule từng hội chứng:
+        1. Hội chứng cổ vai cánh tay: trigger là đau vùng cổ/cột sống cổ/cổ vai/cổ vai cánh tay hoặc vận động cột sống cổ đau/hạn chế; có thể kèm đau lan vai/cánh tay, co cứng cơ cạnh sống cổ, tê bì/đau lan tay nếu có dữ kiện thật; ghép X-quang/MRI/CT cột sống cổ nếu có trong A14_STATE.
+        2. Hội chứng viêm khớp: trigger là triệu chứng khớp rõ như đau khớp, đau khớp gối khi vận động, hạn chế vận động khớp, sưng/nóng/đỏ/đau khớp, lạo xạo khớp/lạo xạo xương, tràn dịch/cứng khớp; ghép X-quang/siêu âm/MRI khớp hoặc CRP nếu có trong A14_STATE.
+        3. Hội chứng thắt lưng hông: trigger là đau vùng cột sống thắt lưng/đau thắt lưng hoặc vận động CSTL đau/hạn chế; có thể kèm đau lan mông/chân, đau kiểu rễ, tê bì chân đi kèm; ghép X-quang/MRI/CT CSTL nếu có trong A14_STATE.
+        4. Hội chứng tiền đình: trigger là hoa mắt chóng mặt hoặc chóng mặt kèm đi lại khó/mất thăng bằng/Romberg(+); hoa mắt chóng mặt đơn độc hiện tại rõ vẫn quy về Hội chứng tiền đình; chỉ đưa cận lâm sàng khi A14_STATE có kết quả thật liên quan.
+        5. Hội chứng viêm dạ dày tá tràng: trigger là ợ hơi, ợ chua, nóng rát thượng vị, đau thượng vị, ấn tức thượng vị, Mendel(+), hoặc buồn nôn/nôn/đầy bụng/khó tiêu nếu liên quan dữ kiện thật; ghép nội soi dạ dày - tá tràng, test H. pylori hoặc kết quả liên quan nếu có trong A14_STATE.
+        6. Hội chứng tăng glucose máu: trigger là triệu chứng tăng glucose hoặc glucose/đường máu/HbA1c tăng/cao rõ trong dữ kiện hiện tại hợp lệ; gồm khát nhiều, uống nhiều, tiểu nhiều, mệt do tăng đường, sụt cân, nhìn mờ, tê bì/dị cảm liên quan; glucose máu tăng, đường máu tăng, HbA1c tăng, tăng glucose máu, tăng đường máu; đường máu tại nhà dao động cao rõ như 15-20 mmol/L, glucose 18,4 mmol/L, HbA1c 9,7% hoặc mọi glucose/HbA1c numeric cao rõ từ nguồn hợp lệ. Không dùng NAME = Hội chứng tăng đường huyết và không để glucose/đường máu/HbA1c tăng thành TYPE = Cận lâm sàng rời nếu đủ trigger hội chứng.
+
+    Rule cận lâm sàng:
+        1. Chỉ dùng kết quả đã có từ A14_STATE; không dùng xét nghiệm/chẩn đoán hình ảnh/thăm dò cần làm trong A13 hoặc C1 để tạo kết quả.
+        2. Không tự tạo kết quả bình thường hoặc bất thường và không biến chỉ định cần làm thành kết quả đã có.
+        3. Khi thiếu kết quả thật, ghi CẬN_LÂM_SÀNG: NONE trong C4_ITEMS và không render dòng cận lâm sàng tương ứng trong C4_FOR_O2.
+        4. Cận lâm sàng liên quan trực tiếp hội chứng phải được gộp vào CẬN_LÂM_SÀNG của hội chứng đó; không render lại thành cận lâm sàng rời nếu đã ghép.
+        5. Nếu duplicate cận lâm sàng đã ghép hội chứng xảy ra: ITEM_CHECK/C4_CHECK = NEEDS_FIX và C4_ERROR = ERR-C4-DUPLICATE-CLS-ALREADY-IN-SYNDROME.
+
+    TYPE_GROUP_ORDER và ORDER:
+        1. Toàn bộ TYPE = Hội chứng trước.
+        2. Sau đó toàn bộ TYPE = Triệu chứng.
+        3. Cuối cùng toàn bộ TYPE = Cận lâm sàng rời.
+        4. ORDER trong C4_ITEMS phải khớp thứ tự render cuối cùng trong C4_FOR_O2 sau khi group theo TYPE_GROUP_ORDER.
+        5. Không giữ thứ tự input nếu làm sai group TYPE; phải reorder theo TYPE_GROUP_ORDER rồi ORDER nội bộ.
+
+    Format C4_FOR_O2:
+        1. C4_FOR_O2 phải là danh sách render-ready; mỗi item top-level bắt đầu bằng “-”.
+        2. TYPE = Hội chứng render duy nhất:
+            - [NAME]:
+              + [LÂM_SÀNG nếu khác NONE]
+              + [CẬN_LÂM_SÀNG nếu khác NONE]
+        3. Dòng con hội chứng thụt đúng 2 khoảng trắng trước dấu “+”; dòng con chỉ là dữ kiện, không thêm nhãn.
+        4. TYPE = Triệu chứng render duy nhất “- [LÂM_SÀNG]”; không render NAME, không dấu hai chấm, không block cha-con, không dòng “- Triệu chứng”, không fallback sang NAME.
+        5. TYPE = Cận lâm sàng render duy nhất “- [CẬN_LÂM_SÀNG]”; không render NAME, không block cha-con, không fallback sang NAME.
+        6. Không render label “Lâm sàng:”, “Cận lâm sàng:”, NONE, N/A, placeholder/no-data literal, paragraph tự do, heading O2, câu mở đầu O2 hoặc nhãn nhóm không thuộc format.
+        7. Capitalization thuộc payload render-ready do C4 sở hữu: ký tự chữ/nội dung đầu tiên sau exact prefix top-level “- ” hoặc exact prefix dòng con hai khoảng trắng + “+ ” phải viết hoa khi ký tự đó có khái niệm hoa/thường. Trong item nhiều câu vốn hợp lệ, ký tự chữ/nội dung đầu tiên sau “.” + khoảng trắng phải viết hoa; khi “:” mở đầu phần nội dung tiếp theo, ký tự chữ/nội dung đầu tiên sau “:” + khoảng trắng phải viết hoa. C4 chỉ đổi case của ký tự cần thiết; không đổi wording/nghĩa, TYPE/mapping/order, prefix/indentation, số/đơn vị/ngày, dấu câu mang nghĩa hoặc cấu trúc semantic.
+
+C4_SPECIAL_RULES
+    O2 dependency: O2 requires C4; nếu user yêu cầu O2/tóm tắt bệnh án, G phải thêm C4 vào C_RUN_ORDER trước khi O2 render; C4 không render O2; O2 đọc/copy C4_FOR_O2.
+    A14/CLS boundary: chỉ dùng kết quả cận lâm sàng đã có từ A14_STATE; không dùng A13 chỉ định cần làm; không dùng C1 danh sách cần làm; không tự tạo kết quả bình thường/bất thường; không biến chỉ định cần làm thành kết quả đã có.
+    Duplicate CLS: cận lâm sàng liên quan trực tiếp hội chứng phải gộp vào hội chứng; không render lại thành cận lâm sàng rời nếu đã ghép; duplicate kéo NEEDS_FIX với ERR-C4-DUPLICATE-CLS-ALREADY-IN-SYNDROME.
+    A12/bệnh nền boundary: không bê A12/ICD/bệnh nền/tiền sử thành C4 nếu không có biểu hiện hiện tại; đái tháo đường typ 2 chỉ vào C4 khi có biểu hiện hiện tại hoặc cận lâm sàng đường máu liên quan.
+    No-placeholder/no-data: khi không có item render-ready nào thì C4_CHECK = NEEDS_FIX; không render “Không áp dụng”, “Chưa có dữ kiện”, “Không ghi nhận”, “NONE”, “N/A” hoặc placeholder/no-data literal tương đương trong C4_FOR_O2.
+    Cấm nguồn C khác: không đọc C1/C2/C3/C5 mặc định; không dùng C5 chẩn đoán phân biệt để tạo hội chứng/triệu chứng; không dùng C2 cảnh báo thành hội chứng; không dùng C3 làm cận lâm sàng; nếu tương lai cần C khác thì phải mở dependency riêng và cập nhật G plan.
+
+C4_CHECK_PASS_IF
+    C4_CHECK = PASS chỉ khi tất cả điều kiện sau đúng:
+        1. C4 nằm trong G_STATE.C_RUN_ORDER, A_GATE hợp lệ, đã đọc full current A_STATE, A_MODULE_REV có mặt và chỉ dùng nguồn hợp lệ.
+        2. C4_STATE là full state đúng C4_STATE_SCHEMA; C4_ITEMS đúng block C4_ITEM_N; không patch/delta, list ID hoặc schema cũ.
+        3. Mỗi item có TYPE, NAME, ORDER, LÂM_SÀNG, CẬN_LÂM_SÀNG, ITEM_CHECK và ITEM_ERROR; mọi ITEM_CHECK = PASS và ITEM_ERROR = NONE.
+        4. TYPE chỉ là Hội chứng / Triệu chứng / Cận lâm sàng.
+        5. Hội chứng dùng NAME canonical exact trong 6 hội chứng, không dùng biến thể/tên cũ; nếu match trigger hội chứng chuẩn thì không downgrade thành Triệu chứng/Cận lâm sàng.
+        6. Triệu chứng chỉ dùng khi không đủ hội chứng; Cận lâm sàng rời chỉ dùng khi là kết quả đã có từ A14 và không ghép hội chứng.
+        7. Không dùng A13/C1 chỉ định cần làm như kết quả; không bê A12/bệnh nền/tiền sử/ICD thành C4 nếu không có biểu hiện hiện tại.
+        8. C4_FOR_O2 được render từ C4_ITEMS, đúng format, đúng TYPE_GROUP_ORDER, ORDER khớp thứ tự render, đúng capitalization producer-owned sau prefix “- ”/“  + ” và sau “.”/“:” theo C4_LOGIC_RULES, không label leak, không NONE/N/A, không placeholder/no-data, không paragraph/heading O2/câu mở đầu O2.
+        9. Không duplicate CLS đã ghép hội chứng.
+        10. C4_SOURCE_A_REV đúng actual dependency-subset Ax_REV đã dùng; C4_REV đúng C4_REV_RULE.
+        11. C4 không render O2, không tạo output O, không sửa A/G/O hoặc C khác.
+        12. C4_ERROR = NONE.
+
+C4_NEEDS_FIX_IF
+    C4_CHECK = NEEDS_FIX nếu có bất kỳ lỗi nào:
+        1. C4 không nằm trong C_RUN_ORDER nhưng vẫn chạy/ghi state.
+        2. Thiếu A_GATE, full A_STATE hoặc A_MODULE_REV.
+        3. Dùng nguồn ngoài allowlist, O output/rendered output, C khác mặc định, A13 chỉ định như kết quả, A14 sai boundary, A12/ICD/bệnh nền/tiền sử thay biểu hiện hiện tại hoặc C5 chẩn đoán phân biệt thay hội chứng.
+        4. Thiếu field schema, TYPE sai, ITEM_CHECK/ITEM_ERROR sai, C4_STATE không full state hoặc patch/delta.
+        5. NAME hội chứng không thuộc 6 canonical, dùng biến thể hội chứng cũ hoặc NAME bị sửa/tùy biến.
+        6. Match trigger hội chứng nhưng downgrade thành Triệu chứng/Cận lâm sàng.
+        7. Triệu chứng hoặc Cận lâm sàng render sai format.
+        8. C4_FOR_O2 không render từ C4_ITEMS, không khớp C4_ITEMS, sai ORDER/TYPE_GROUP_ORDER, vi phạm capitalization producer-owned sau prefix “- ”/“  + ” hoặc sau “.”/“:”, có label leak, NONE/N/A, placeholder/no-data, heading O2, câu mở đầu O2, đoạn văn tự do, NAME triệu chứng hoặc fallback từ NAME. Lỗi capitalization là producer presentation defect xác định được, C4 tự UPDATE/rebuild từ facts hiện có và recheck, không USER_INPUT_REQUIRED.
+        9. Duplicate CLS đã nằm trong hội chứng.
+        10. C4_CHECK = PASS nhưng C4_ERROR khác NONE; hoặc C4_CHECK = NEEDS_FIX nhưng C4_ERROR không rõ nhóm lỗi.
+        11. C4_REV hoặc C4_SOURCE_A_REV sai.
+        12. C4_FOR_O2 thiếu/sai format khiến O2 không thể exact-copy render; lỗi phải route về C4/source C4, không để O2 tự sửa.
+
+C4_ERROR_RULE
+    Nếu C4_CHECK = PASS: C4_ERROR = NONE.
+    Nếu C4_CHECK = NEEDS_FIX: C4_ERROR phải ghi rõ lỗi cụ thể và nhóm lỗi.
+    Giữ taxonomy lỗi chính: field syntax; forbidden type; type render; label leak; symptom name leak; render NONE; order mismatch; source CLS; boundary A/C/O; syndrome name not in list; legacy dictionary; modified name; downgraded to symptom; downgraded to isolated CLS; duplicate CLS.
+    Mã lỗi quan trọng: ERR-C4-DUPLICATE-CLS-ALREADY-IN-SYNDROME.
+    Mã lỗi ưu tiên khi cần: ERR-C4-FIELD-SYNTAX; ERR-C4-FORBIDDEN-TYPE; ERR-C4-TYPE-RENDER; ERR-C4-LABEL-LEAK; ERR-C4-SYMPTOM-NAME-LEAK; ERR-C4-RENDER-NONE; ERR-C4-FOR-O2-ORDER; ERR-C4-FOR-O2-CAPITALIZATION; ERR-C4-TYPE-GROUP-ORDER; ERR-C4-SYNDROME-NAME-NOT-IN-LIST; ERR-C4-LEGACY-SYNDROME-DICTIONARY; ERR-C4-SYNDROME-NAME-MODIFIED; ERR-C4-SYNDROME-DOWNGRADED-TO-SYMPTOM; ERR-C4-SYNDROME-DOWNGRADED-TO-ISOLATED-CLS; ERR-C4-STALE-PASS; ERR-C4-REUSE-WITHOUT-REVALIDATION; ERR-C4-MISSING-ITEMS; ERR-C4-NAME-FALLBACK. ERR-C4-FOR-O2-CAPITALIZATION chỉ có nghĩa C4_FOR_O2 vi phạm capitalization invariant producer-owned nêu trên.
+
+C4_REUSE_RULE
+    CREATE khi chưa có C4_STATE hợp lệ trong ROUND hoặc C4_SOURCE_A_REV trống.
+    Recorded C4 dependency drift yêu cầu current-contract revalidation; UPDATE khi semantic C4 content/CHECK/ERROR thật đổi, không chỉ vì unrelated Ax hoặc source metadata refresh.
+    REUSE chỉ hợp lệ khi C4_STATE hiện hành hợp lệ, mọi recorded member C4_SOURCE_A_REV khớp current Ax_STATE.Ax_REV và current-contract revalidation PASS, C4_ITEMS hợp lệ, C4_FOR_O2 hợp lệ, C4_ITEMS và C4_FOR_O2 khớp nhau, đã revalidate trong ROUND hiện tại và C4_CHECK = PASS.
+    Không được REUSE stale PASS, state chỉ có C4_FOR_O2 nhưng thiếu C4_ITEMS, state cũ chưa revalidate hoặc output cũ sai schema.
+    Khi REUSE vẫn xuất full C4_STATE; không ghi “giữ nguyên như trước” hoặc “reuse C4” thay nội dung thật; không dùng patch/delta.
+
+C4_REV_RULE
+    CREATE: tạo full C4_STATE mới và C4_REV = 1.
+    UPDATE: tăng C4_REV khi semantic C4_STATE thật đổi, gồm C4_ITEMS, C4_FOR_O2, C4_CHECK hoặc C4_ERROR.
+    REUSE/source refresh: giữ C4_REV khi semantic content/CHECK/ERROR không đổi sau current-contract revalidation.
+    C4_SOURCE_A_REV chỉ ghi actual used subset từ permitted A1-A11/A14; unrecorded unrelated Ax change không tự stale C4.
+    Nếu C4 không nằm trong C_RUN_ORDER thì không tăng C4_REV, không cập nhật C4_SOURCE_A_REV và không ghi C4_STATE mới.
+    C4 không tự sửa RUN_MODE, không tạo RUN_MODE mới, không điều phối RUN_MODE và không tạo C_MODULE_REV trực tiếp nếu contract chung không cho phép.
+
+C4_END
+    C4 hoàn tất khi đã CREATE/UPDATE/REUSE full C4_STATE, C4_CHECK xác định PASS hoặc NEEDS_FIX, PASS thì C4_ERROR = NONE, NEEDS_FIX thì C4_ERROR rõ lỗi, và không render O2, không sửa A, không sửa C khác, không sửa G, không gọi O.
+    Sau C4, chuyển sang module C kế tiếp trong C_RUN_ORDER; hoặc STEP C kết thúc và chuyển sang C_GATE nếu C4 là module C cuối.
+    C4 không giả định C5 luôn là module kế tiếp.
+
+<<< END C4
+
+####################################################################################################
+
+C5 — CHẨN ĐOÁN PHÂN BIỆT / BỆNH KHÁC CÓ KHẢ NĂNG
+Version: BA S-G-A-C-O V4 compact
+Update: 28/06/2026 UTC
+
+C5_ROLE
+    C5 là module C selective chuẩn hóa chẩn đoán phân biệt và bệnh khác có khả năng từ dữ kiện đã có trong full current A_STATE hợp lệ.
+    C5 chỉ chạy khi C5 nằm trong G_STATE.C_RUN_ORDER của ROUND hiện tại.
+    C5 tạo full C5_STATE cho current selective C_STATE.
+    C5_STATE là source chính thức để O13 render phần chẩn đoán phân biệt và bệnh khác có khả năng.
+    C5 không tạo chẩn đoán chính thức, không thay/sửa A12, không tạo hướng điều trị, không tạo chỉ định xét nghiệm/thăm dò, không tạo thuốc/đơn thuốc, không tạo cảnh báo lâm sàng, không kiểm thuốc, không tổng hợp hội chứng, không chứa danh sách cận lâm sàng, không render O13/O, không tự gọi O và không tự chạy module C khác.
+
+C5_ALLOWED_SOURCE
+    C5 chỉ được đọc:
+        1. User input của ROUND hiện tại nếu liên quan trực tiếp tới yêu cầu C5.
+        2. G_STATE metadata kỹ thuật và C_RUN_ORDER để xác nhận C5 được chạy; nếu cần RUN_MODE thì chỉ đọc từ G_STATE.
+        3. A_GATE hợp lệ mới nhất.
+        4. Full current A_STATE mới nhất sau A_GATE, gồm A1-A15, làm nguồn dữ kiện bệnh nhân hợp lệ.
+        5. A_MODULE_REV từ A_GATE hoặc full current A_STATE.
+        6. C5_STATE hiện hành mới nhất nếu đã có, chỉ để CREATE / UPDATE / REUSE.
+        7. File/module C5.
+    Trong full current A_STATE, C5 được đọc A12 để biết chẩn đoán hiện tại, phân biệt với bệnh khác, nêu bệnh khác có khả năng chưa được A12 kết luận và ghi giới hạn nếu A12 chưa đủ dữ kiện.
+    Trong full current A_STATE, C5 được đọc A14 để làm căn cứ tổng quát / đối chiếu kết quả đã có, nhưng không copy, chuẩn hóa, thống kê, tóm tắt trị số hoặc mô tả cận lâm sàng.
+    C5 không được đọc hoặc dùng: O_OUTPUT, output đã render, C1_STATE/C2_STATE/C3_STATE/C4_STATE/C6_STATE/C7_STATE mặc định, hidden memory/trí nhớ ẩn, dữ liệu ngoài state hợp lệ, web/guideline ngoài nếu không thuộc user input hoặc contract kiến trúc riêng, C6 trong PLAN_9 ngoài bệnh án, hoặc A_STATE patch/delta thay full current A_STATE.
+    Patch này không mở dependency C5 requires C2/C4/C6/Cy. Nếu tương lai cần C5 đọc C module khác, phải mở task kiến trúc riêng, khai báo dependency trong G plan, bảo đảm module nguồn chạy trước C5 và audit lại boundary.
+
+C5_ALLOWED_ACTION
+    C5 được làm:
+        1. CREATE full C5_STATE.
+        2. UPDATE full C5_STATE.
+        3. REUSE full C5_STATE.
+        4. CHECK C5_STATE.
+        5. Đọc full current A_STATE và A_MODULE_REV sau A_GATE.
+        6. Chuẩn hóa C5_DIFFERENTIAL_DIAGNOSES, C5_OTHER_POSSIBLE_CONDITIONS, C5_REASONING_BASIS, C5_EXCLUSION_LIMITS, C5_FINAL, C5_CHECK và C5_ERROR.
+        7. Đối chiếu A12 nhưng không sửa A12.
+        8. Dùng A14 làm căn cứ tổng quát nhưng không chứa/chuẩn hóa dữ liệu cận lâm sàng.
+        9. Xếp mức khả năng nếu cần: cao hơn, trung bình, thấp hơn nhưng cần lưu ý.
+        10. Dùng no-data/no-prominent literals khi không đủ dữ kiện hoặc không có phân biệt/bệnh khác nổi bật.
+        11. Hoàn tất bằng C5_CHECK = PASS hoặc NEEDS_FIX.
+    C5 không được chạy khi không có trong C_RUN_ORDER, không tự thêm C5 vào C_RUN_ORDER, không tự chạy C module khác, không tự gọi O13/O, không render O, không tạo chẩn đoán chính thức, không sửa A12/A13/A14/A_STATE/G_STATE/C state khác, không tạo hướng điều trị, không tạo chỉ định xét nghiệm/thăm dò, không viết phác đồ/kế hoạch theo dõi, không tạo thuốc/đơn thuốc, không tạo cảnh báo thay C2, không tạo hội chứng/thông tin cho C4 và không đọc C6/web để bổ sung phân biệt.
+    Sau C5, chuyển sang module C kế tiếp theo G_STATE.C_RUN_ORDER; không giả định C6 luôn là module kế tiếp.
+
+C5_ALLOWED_WRITE
+    C5 chỉ được ghi full C5_STATE khi C5 được chạy.
+    C5 không được ghi patch/delta, A_STATE, A1-A15, C1-C4, C6-C7, G_STATE, C_RUN_ORDER, O_OUTPUT, O13, S/G hoặc state/output module khác.
+    C5 không tạo C5_FOR_O*, C5_TO_C4, C5_PARACLINICAL_STATUS, C5_PARACLINICAL_SUMMARY, C5_SIGNIFICANT_FINDINGS, C5_SOURCE_C_REV, UPDATED_AT, C5_ITEMS, C5_STATUS hoặc field ngoài schema hiện tại.
+
+C5_STATE_SCHEMA
+    C5_STATE:
+        STATE_VERSION = ...
+        C5_REV = ...
+        C5_SOURCE_A_REV = <actual dependency-subset map các Ax_REV đã dùng>
+        C5_DIFFERENTIAL_DIAGNOSES = ...
+        C5_OTHER_POSSIBLE_CONDITIONS = ...
+        C5_REASONING_BASIS = ...
+        C5_EXCLUSION_LIMITS = ...
+        C5_FINAL:
+            Chẩn đoán phân biệt:
+                ...
+            Bệnh khác có khả năng:
+                ...
+            Căn cứ lập luận:
+                ...
+            Giới hạn loại trừ / dữ kiện còn thiếu:
+                ...
+        C5_CHECK = PASS / NEEDS_FIX
+        C5_ERROR = ...
+    C5_FINAL phải có đúng 4 nhóm: Chẩn đoán phân biệt; Bệnh khác có khả năng; Căn cứ lập luận; Giới hạn loại trừ / dữ kiện còn thiếu.
+    Không đổi tên 4 nhóm C5_FINAL, không bỏ nhóm, không gộp thành một đoạn văn và không để trống nhóm.
+    Khi có chẩn đoán phân biệt, nhóm Chẩn đoán phân biệt nên là bullet list, mỗi mục riêng.
+    Schema C5_STATE không có UPDATED_AT, C5_SOURCE_C_REV, C5_ITEMS, C5_FOR_O*, C5_STATUS, C5_TO_C4, C5_PARACLINICAL_STATUS, C5_PARACLINICAL_SUMMARY, C5_SIGNIFICANT_FINDINGS hoặc field ngoài schema hiện tại.
+
+C5_LOGIC_RULES
+    C5 chỉ nêu chẩn đoán phân biệt hoặc bệnh khác có khả năng khi có căn cứ từ dữ kiện đã có trong full current A_STATE.
+    C5 không bịa triệu chứng, dấu khám, tiền sử, diễn biến, yếu tố nguy cơ, thuốc, kết quả xét nghiệm, mô tả hình ảnh, dữ kiện cận lâm sàng hoặc chẩn đoán chính thức.
+    C5_DIFFERENTIAL_DIAGNOSES là danh sách chẩn đoán phân biệt có căn cứ; mỗi mục có tên bệnh/nhóm bệnh và lý do ngắn, gắn với dữ kiện đã có, không phải chẩn đoán chính thức, không thay A12 và không liệt kê bệnh lan man không có căn cứ.
+    C5_OTHER_POSSIBLE_CONDITIONS là danh sách bệnh/tình trạng khác có khả năng nhưng chưa đủ dữ kiện để coi là chẩn đoán chính thức; có thể là bệnh đi kèm, bệnh nền liên quan hoặc tình trạng giải thích một phần triệu chứng; không phải hội chứng C4 và không phải chẩn đoán A12.
+    C5_REASONING_BASIS nêu căn cứ lập luận từ dữ kiện đã có, ngắn gọn, có thể gồm dữ kiện ủng hộ, dữ kiện làm giảm khả năng và dữ kiện còn thiếu; không lặp toàn bộ A_STATE, không chứa cận lâm sàng chi tiết, không chứa bảng xét nghiệm và không chứa mô tả hình ảnh dài.
+    C5_EXCLUSION_LIMITS ghi giới hạn loại trừ/dữ kiện còn thiếu; không phải C1, không phải danh sách chỉ định xét nghiệm, không phải hướng điều trị, không phải C2 cảnh báo và không phải kế hoạch theo dõi.
+    Likelihood/priority: C5 có thể dùng mức cao hơn, trung bình, thấp hơn nhưng cần lưu ý; phải dựa trên dữ kiện hiện có; không dùng phần trăm giả, không dùng điểm số giả; nếu chưa đủ để ưu tiên chắc chắn thì ghi chưa đủ dữ kiện để ưu tiên chắc chắn.
+    Bệnh nguy hiểm có thể được nêu nếu có căn cứ; phải ghi lý do và giới hạn loại trừ; không viết cảnh báo xử trí thay C2 và không tạo khuyến cáo điều trị/cấp cứu nếu không thuộc contract C5.
+    No-data/no-prominent literals phải dùng đúng khi phù hợp, không dùng blank/NONE/NULL thay các literal này:
+        - C5_DIFFERENTIAL_DIAGNOSES = Không có chẩn đoán phân biệt nổi bật từ dữ kiện hiện có.
+        - C5_DIFFERENTIAL_DIAGNOSES = Chưa đủ dữ kiện để lập chẩn đoán phân biệt có ý nghĩa.
+        - C5_OTHER_POSSIBLE_CONDITIONS = Không có bệnh khác có khả năng nổi bật từ dữ kiện hiện có.
+        - C5_OTHER_POSSIBLE_CONDITIONS = Chưa đủ dữ kiện để xác định bệnh khác có khả năng nổi bật.
+        - C5_REASONING_BASIS = Dữ kiện hiện có chưa đủ đặc hiệu.
+        - C5_EXCLUSION_LIMITS = Không ghi nhận giới hạn lớn cho phạm vi phân biệt hiện tại từ dữ kiện hiện có.
+
+C5_SPECIAL_RULES
+    Boundary với A12: A12 là chẩn đoán hiện tại/chính thức; C5 đọc A12 để đối chiếu nhưng không sửa A12_STATE, không viết “chẩn đoán cuối cùng”, không đổi chẩn đoán A12 và không tạo A12_TO_*; nếu cần cập nhật A12, G chạy A12 ở vòng phù hợp.
+    Boundary với A13: A13 là hướng cần làm/hướng điều trị; C5 không viết hướng điều trị, không chỉ định xét nghiệm/thăm dò, không viết phác đồ/kế hoạch theo dõi, không dùng A13_LABS hoặc A13_IMAGING như kết quả đã có và không dùng A13_TREATMENT để tạo phân biệt.
+    Boundary với A14: C5 được đọc A14 làm căn cứ tổng quát; C5 không sao chép trị số xét nghiệm, bảng xét nghiệm, mô tả hình ảnh/ECG/nội soi/thăm dò, không tạo dữ liệu cận lâm sàng, không tạo summary cận lâm sàng, không tạo field cận lâm sàng mới và không làm cầu nối cho C4.
+    Boundary với C4: C5 không đọc C4_STATE/C4_FOR_O2 mặc định, không chuyển bệnh khác thành hội chứng, không tạo C5_TO_C4, không chuyển dữ kiện sang C4; C4 đọc A14 trực tiếp nếu cần cận lâm sàng.
+    Boundary với C2: C5 không đọc C2_STATE mặc định, không mở dependency C5 requires C2 và không thay C2 cảnh báo. Nếu cần nhắc căn cứ liên quan cảnh báo, C5 chỉ dùng dữ kiện cảnh báo/triệu chứng có trong full current A_STATE nếu có.
+    Boundary với C6/Cy: hiện không có dependency C5 requires Cy; không đọc C6/Cy trong patch này; nếu tương lai cần C6/Cy, phải mở task kiến trúc riêng, khai báo dependency trong G plan, cho Cy chạy trước C5 và audit lại.
+    Boundary với O/O13: O13 trực tiếp requires C5 và render từ C5_STATE hợp lệ; C5 không render O13/O, không tự gọi O13/O, không đọc O output; output khác muốn phần phân biệt phải render O13 hoặc khai báo dependency riêng.
+    PLAN_9 không làm C5 chạy; C5 không trả lời outside-record và không ghi outside-record vào bệnh án.
+
+C5_CHECK_PASS_IF
+    C5_CHECK = PASS khi tất cả điều kiện sau đạt:
+        1. C5 nằm trong G_STATE.C_RUN_ORDER.
+        2. A_GATE hợp lệ, đã đọc full current A_STATE và A_MODULE_REV có mặt.
+        3. Chỉ dùng nguồn allowlist; không dùng rendered output/O output; không đọc C khác mặc định; không dùng hidden memory/web/guideline ngoài contract; không dùng A_STATE patch/delta.
+        4. C5_STATE là full state, đủ schema, không có field cấm và không dùng patch/delta.
+        5. C5_FINAL đủ 4 nhóm đúng tên và khớp C5_DIFFERENTIAL_DIAGNOSES, C5_OTHER_POSSIBLE_CONDITIONS, C5_REASONING_BASIS, C5_EXCLUSION_LIMITS.
+        6. Nội dung phân biệt/bệnh khác có căn cứ hoặc dùng no-data/no-prominent literal đúng.
+        7. C5_REASONING_BASIS ngắn gọn, không lặp toàn bộ A_STATE.
+        8. C5_EXCLUSION_LIMITS không biến thành chỉ định xét nghiệm, hướng điều trị, cảnh báo hoặc kế hoạch theo dõi.
+        9. Không chứa cận lâm sàng chi tiết, không dùng A13 chỉ định như kết quả đã có, không thay A12, không lấn C4 và không render O.
+        10. C5_REV đúng rule; C5_SOURCE_A_REV đúng actual dependency-subset Ax_REV đã dùng.
+        11. Nếu PASS thì C5_ERROR = NONE.
+
+C5_NEEDS_FIX_IF
+    C5_CHECK = NEEDS_FIX khi có bất kỳ lỗi nào sau:
+        1. C5 chạy ngoài C_RUN_ORDER hoặc tự thêm/sửa C_RUN_ORDER.
+        2. Thiếu A_GATE, full current A_STATE hoặc A_MODULE_REV.
+        3. Dùng nguồn ngoài allowlist, O output/rendered output, C module khác mặc định, C2_STATE/C4_STATE/C6_STATE không có dependency hợp lệ, hidden memory/web/guideline ngoài contract hoặc A_STATE patch/delta.
+        4. Thiếu field schema, thêm field ngoài schema, dùng patch/delta thay full state hoặc tạo C5_FOR_O*/C5_TO_C4/field cận lâm sàng cấm.
+        5. C5_FINAL thiếu nhóm, đổi tên nhóm, để trống nhóm hoặc không khớp field nội dung.
+        6. Bịa dữ kiện, liệt kê bệnh lan man không có căn cứ hoặc dùng blank/NONE/NULL thay literal no-data/no-prominent bắt buộc.
+        7. Biến phân biệt/bệnh khác thành chẩn đoán chính thức, sửa/thay A12 hoặc ghi “chẩn đoán cuối cùng”.
+        8. Dùng A13 như kết quả đã có, viết hướng điều trị, chỉ định xét nghiệm/thăm dò, phác đồ hoặc kế hoạch theo dõi.
+        9. Chứa trị số xét nghiệm, mô tả hình ảnh, bảng cận lâm sàng chi tiết hoặc tạo dữ liệu cận lâm sàng.
+        10. Lấn sang C1/C2/C3/C4/C6/C7/O hoặc tạo output/state module khác.
+        11. C5_CHECK = PASS nhưng C5_ERROR != NONE.
+        12. C5_CHECK = NEEDS_FIX nhưng C5_ERROR không rõ nhóm lỗi.
+        13. C5_REV hoặc C5_SOURCE_A_REV sai rule.
+
+C5_ERROR_RULE
+    Nếu C5_CHECK = PASS thì C5_ERROR = NONE.
+    Nếu C5_CHECK = NEEDS_FIX thì C5_ERROR ghi rõ lỗi cụ thể theo nhóm: Nguồn đọc; C5_DIFFERENTIAL_DIAGNOSES; C5_OTHER_POSSIBLE_CONDITIONS; C5_REASONING_BASIS; C5_EXCLUSION_LIMITS; C5_FINAL; Lỗi chứa cận lâm sàng; Boundary A/C/O; Schema; REV/source REV nếu có.
+    Không ghi lỗi chung chung nếu xác định được lỗi.
+
+C5_REUSE_RULE
+    CREATE khi C5 được chạy và chưa có C5_STATE cũ: xuất full C5_STATE, C5_REV = 1.
+    UPDATE khi C5 được chạy và nội dung thật C5 thay đổi do user input hoặc full current A_STATE hợp lệ: xuất full C5_STATE mới và tăng C5_REV.
+    REUSE khi C5 được chạy nhưng nội dung thật không đổi: xuất full C5_STATE và giữ C5_REV.
+    REUSE không được ghi “reuse C5” hoặc “giữ nguyên như trước” thay nội dung thật và không được dùng patch/delta.
+
+C5_REV_RULE
+    Mỗi lần C5 chạy phải đọc full current A_STATE sau A_GATE và chỉ record actual-used Ax_REV dependencies.
+    Luôn ghi C5_SOURCE_A_REV theo actual used Ax_REV dependency subset.
+    Nếu recorded source metadata đổi nhưng semantic C5 content/CHECK/ERROR sau revalidation không đổi thì giữ C5_REV và refresh actual subset; unrelated unrecorded Ax change không tự stale C5.
+    Nếu nội dung thật C5 đổi thì tăng C5_REV.
+    Nếu C5 không chạy thì không in C5_STATE, không tăng C5_REV và không cập nhật C5_SOURCE_A_REV.
+    C5 không tự tạo C_MODULE_REV chung.
+
+C5_END
+    C5 hoàn tất khi đã tạo/cập nhật/reuse full C5_STATE hợp lệ, đã kiểm C5_CHECK, không tạo dữ liệu ngoài C5_STATE, không sửa A/C/G/O, không render O và không tự gọi C6/O13.
+    Sau C5, chuyển module C kế tiếp theo G_STATE.C_RUN_ORDER; không giả định C6 luôn chạy kế tiếp.
+
+<<< END C5
+
+####################################################################################################
+
+C6 — TRA CỨU / NGUỒN THAM CHIẾU NGOÀI / BẰNG CHỨNG HỖ TRỢ
+Version: BA S-G-A-C-O V4 compact
+Update: 28/06/2026 GMT+7
+
+>>> READ-LOCK: C6
+- C6 là module C selective; formal C6 chỉ chạy khi C6 nằm trong G_STATE.C_RUN_ORDER của ROUND hiện tại.
+- C6 chỉ tạo/cập nhật/reuse full C6_STATE theo schema dưới đây; không có output render thường quy riêng.
+- C6 chuẩn hóa tra cứu nguồn ngoài / source policy / bằng chứng hỗ trợ / gói tham chiếu có nguồn.
+- C6 không phải A module, không phải O12, không quyết định lâm sàng cuối, không render O/O12 và không mutate A/C/G/O.
+<<< END READ-LOCK: C6
+
+C6_ROLE
+    C6 tạo gói tham chiếu có nguồn khi được chạy formal: mục đích, nguồn, kết quả chính, khả năng áp dụng, giới hạn và handoff metadata.
+    C6 không viết output cuối cho user trong workflow formal và không biến tài liệu tham khảo thành dữ kiện bệnh nhân.
+    C6 không tạo triệu chứng, dấu khám, xét nghiệm, kết quả cận lâm sàng, chẩn đoán, chẩn đoán phân biệt, hướng xử trí, chỉ định, thuốc/đơn thuốc, cảnh báo thuốc, bệnh trình hoặc tình trạng ra viện.
+    C6 không thay C3, C4, C5, C7, A12, A13, A14 hoặc A15.
+
+C6_ALLOWED_SOURCE
+    Khi C6 nằm trong G_STATE.C_RUN_ORDER, C6 chỉ được đọc:
+        1. User input ROUND hiện tại nếu liên quan trực tiếp yêu cầu C6.
+        2. G_STATE metadata kỹ thuật, C_RUN_ORDER và RUN_MODE nếu cần; RUN_MODE không quyết định quyền chạy C6.
+        3. A_GATE hợp lệ, full current A_STATE sau A_GATE và A_MODULE_REV nếu C6 cần case context formal hoặc dựa vào A_STATE.
+        4. C6_STATE hiện hành mới nhất nếu đã có, chỉ để CREATE / UPDATE / REUSE.
+        5. File/module C6.
+        6. Source policy / danh mục nguồn tin cậy do user hoặc hệ thống khai báo rõ trong contract C6.
+        7. Web/guideline/source ngoài khi nhiệm vụ formal yêu cầu tra cứu và nguồn đó đúng source policy C6.
+    C6 không được đọc/dùng: O_OUTPUT, output đã render, C1_STATE, C2_STATE, C3_STATE, C4_STATE, C5_STATE, C7_STATE, hidden memory/trí nhớ ẩn, dữ liệu ngoài state hợp lệ, nguồn web/guideline ngoài danh mục C6, A_STATE patch/delta thay full current A_STATE khi cần case context, generic C state, generic mixed A/C state, nguồn yếu làm nguồn chính nếu có nguồn tin cậy hơn, hoặc nguồn chưa đọc trong C6_SOURCE_LIST.
+    C6 không đọc C khác chỉ vì state đó tồn tại; nếu tương lai cần dependency C khác thì phải mở task kiến trúc riêng, khai báo G plan riêng và audit lại.
+
+C6_ALLOWED_ACTION
+    Formal C6 chỉ chạy khi C6 nằm trong G_STATE.C_RUN_ORDER; user request, A_STATE đổi, thông tin có tính thời gian hoặc O12 cần nguồn chỉ là lý do để G cân nhắc plan C6, không tự kích hoạt C6.
+    C6 được CREATE, UPDATE, REUSE và CHECK full C6_STATE; được chuẩn hóa tra cứu/source policy; được tra cứu nguồn ngoài khi nhiệm vụ formal yêu cầu và source policy C6 cho phép.
+    C6 dùng dependency-subset map các actual Ax_REV khi A-dependent, hoặc đúng một sentinel NONE / NOT_APPLICABLE khi genuinely A-independent; sentinel và map không coexist.
+    PLAN_9 / PLAN_OUTSIDE_RECORD không chạy formal C6: không tạo formal C6_STATE, không tạo formal O12_OUTPUT, không mutate A/C/O state; C6 chỉ là source/reference rules tham khảo khi cần trả lời ngoài bệnh án.
+    C6 không tự thêm C6 vào C_RUN_ORDER, không tự chạy C module khác, không tự sửa G_STATE, không tạo C_MODULE_REV chung, không render O/O12, không tự gọi/chọn O12 hoặc O output, không sửa A_STATE/A12/A13/A14/A15/C1-C5/C7, không tạo clinical decision và không tự áp dụng guideline vào bệnh án.
+    Sau C6, chuyển module C kế tiếp theo G_STATE.C_RUN_ORDER; không giả định C5 hoặc C7 là module kế tiếp; nếu C6 là C cuối trong C_RUN_ORDER thì STEP C kết thúc và chuyển C_GATE theo contract chung.
+
+C6_ALLOWED_WRITE
+    C6 chỉ được ghi full C6_STATE khi C6 được chạy formal.
+    C6 không được ghi patch/delta, A_STATE, A1-A15, C1-C5, C7, G_STATE, C_RUN_ORDER, O_OUTPUT, O12, O module khác, S/G, state/output module khác hoặc C_MODULE_REV chung.
+    C6 không tạo field ngoài schema hiện tại.
+
+C6_STATE_SCHEMA
+    C6_STATE:
+        STATE_VERSION = ...
+        C6_REV = ...
+        C6_SOURCE_A_REV = <actual dependency-subset map | NONE | NOT_APPLICABLE theo exclusive branch>
+        C6_SEARCH_PURPOSE = ...
+        C6_TARGET_MODULE = ...
+        C6_SOURCE_SCOPE = ...
+        C6_SEARCH_QUERY = ...
+        C6_SOURCE_LIST = ...
+        C6_KEY_FINDINGS = ...
+        C6_APPLICABILITY = ...
+        C6_LIMITATIONS = ...
+        C6_TO_MODULE = ...
+        C6_FINAL = ...
+        C6_CHECK = PASS / NEEDS_FIX
+        C6_ERROR = ...
+    Không thêm UPDATED_AT, C6_SOURCE_C_REV, C6_FOR_O*, C6_CITATIONS, C6_REFERENCE, C6_EVIDENCE_SUMMARY, C6_QUERY, C6_STATUS hoặc field ngoài schema hiện tại.
+    C6_SEARCH_PURPOSE ghi mục đích tra cứu cụ thể.
+    C6_TARGET_MODULE ghi metadata module/output dự kiến nhận gói tham chiếu; không ép module chạy.
+    C6_SOURCE_SCOPE ghi loại nguồn được phép, mức ưu tiên, phạm vi và giới hạn nguồn.
+    C6_SEARCH_QUERY ghi câu hỏi/truy vấn tra cứu, không phải kết quả.
+    C6_SOURCE_LIST ghi nguồn thực sự đã đọc, cơ quan/tác giả nếu có, ngày/phiên bản nếu có, loại nguồn và mức phù hợp; không liệt kê nguồn chưa đọc.
+    C6_KEY_FINDINGS ghi điểm chính từ nguồn; không vượt quá nội dung nguồn.
+    C6_APPLICABILITY ghi khả năng áp dụng và dữ kiện cần đối chiếu; không biến nguồn thành dữ kiện bệnh nhân.
+    C6_LIMITATIONS ghi giới hạn nguồn, giới hạn áp dụng, thiếu dữ kiện, nguồn cũ hoặc mâu thuẫn nếu có.
+    C6_TO_MODULE là metadata/handoff; không phải output cuối, không sửa module nhận và không ép module nhận chạy.
+    C6_FINAL tóm tắt đủ sáu nhóm: mục đích, nguồn, kết quả chính, khả năng áp dụng, giới hạn và gói chuyển module.
+
+C6_LOGIC_RULES
+    C6 có thể tra cứu nguồn ngoài chỉ khi nhiệm vụ formal yêu cầu tra cứu, source policy C6 cho phép và nguồn thuộc danh mục tin cậy hoặc được ghi rõ giới hạn nếu yếu.
+    Nguồn ưu tiên: guideline chính thức; Bộ Y tế hoặc cơ quan chuyên môn; hội chuyên ngành; cơ sở dữ liệu thuốc uy tín; thông tin thuốc/tờ hướng dẫn thuốc chính thức; bài báo khoa học; systematic review/meta-analysis; sách/tài liệu chuyên ngành; nguồn chính thống khác.
+    Ưu tiên nguồn trực tiếp nhất với câu hỏi và nguồn mới nếu thông tin có thể thay đổi; với guideline/phác đồ/thuốc/chống chỉ định/tương tác/quy định phải cố gắng ghi ngày, năm hoặc phiên bản.
+    Không dùng nguồn yếu làm nguồn chính nếu có nguồn tin cậy hơn; nếu buộc dùng nguồn yếu thì ghi rõ giới hạn trong C6_LIMITATIONS và không trình bày như guideline chính thức.
+    Khi không có nguồn đủ tin cậy: không bịa nguồn, không bịa kết quả, C6_SOURCE_LIST ghi rõ không tìm được nguồn đủ tin cậy/phù hợp, C6_KEY_FINDINGS không bịa, C6_LIMITATIONS ghi giới hạn, và C6_CHECK = NEEDS_FIX nếu yêu cầu bắt buộc nguồn tin cậy.
+    C6 không biến evidence thành clinical decision, không tự áp dụng guideline vào bệnh án, không biến source thành dữ kiện bệnh nhân, không ghi kết quả ngoài nội dung nguồn, không liệt kê nguồn chưa đọc, không sửa module nhận trong C6_TO_MODULE, không ép module nhận chạy và không trả ngược C6_STATE cho A12/A13/A15 trong cùng ROUND.
+
+C6_SPECIAL_RULES
+    Boundary với A: C6 có thể đọc A_GATE/full current A_STATE/A_MODULE_REV nếu cần case context; C6 không sửa A_STATE, không chạy A, không tạo/sửa A12 chẩn đoán, A13 hướng điều trị/chỉ định cần làm, A14 kết quả cận lâm sàng hoặc A15 thuốc/liều/đơn thuốc; C6 không trả ngược C6_STATE cho A12/A13/A15 trong cùng ROUND.
+    Boundary với C: C6 không đọc C1-C5/C7 mặc định, không tạo state C khác, không buộc C khác chạy, không thay C3 cảnh báo thuốc, C4 hội chứng/triệu chứng/cận lâm sàng, C5 chẩn đoán phân biệt hoặc C7 bệnh trình/ra viện.
+    Boundary với O/O12: O12 requires C6 trong formal render; G phải plan C6 nếu O12 formal render cần C6; C6 không render O12, không tự gọi/chọn/sửa O12; O12 chỉ đọc formal C6_STATE hợp lệ và không sửa C6_STATE; C6 không đọc O_OUTPUT/output đã render.
+    PLAN_9 / PLAN_OUTSIDE_RECORD không tạo formal C6_STATE, không tạo formal O12_OUTPUT và không mutate A/C/O state; C6 chỉ là source/reference rules tham khảo cho câu trả lời ngoài bệnh án nếu cần.
+    Runtime order: không giả định C5 hoặc C7 là module kế tiếp, sau C6 chuyển theo G_STATE.C_RUN_ORDER và không có canonical/default C order.
+    Schema discipline: không thêm field chưa có contract, không đổi tên field và không dùng C6_SOURCE_C_REV, UPDATED_AT, C6_FOR_O*, C6_CITATIONS, C6_REFERENCE, C6_EVIDENCE_SUMMARY hoặc C6_QUERY.
+
+C6_CHECK_PASS_IF
+    C6_CHECK = PASS chỉ khi: C6 nằm trong G_STATE.C_RUN_ORDER; C6_STATE là full state không patch/delta; có STATE_VERSION, C6_REV, C6_SOURCE_A_REV; C6_SOURCE_A_REV là valid actual dependency-subset map nếu A-dependent, hoặc đúng một sentinel NONE / NOT_APPLICABLE nếu genuinely A-independent; sentinel không coexist map; đủ tất cả field nội dung schema; C6_FINAL đủ sáu nhóm; C6_SOURCE_LIST chỉ liệt kê nguồn đã đọc; C6_KEY_FINDINGS không vượt nội dung nguồn; C6_APPLICABILITY không biến nguồn thành dữ kiện bệnh nhân; C6_LIMITATIONS ghi giới hạn khi có; chỉ dùng nguồn allowlist/source policy; không đọc C khác mặc định; không dùng rendered output/O output/hidden memory/web guideline ngoài policy; không sửa A, không chạy A, không render O, không tự tạo clinical decision, không tự tạo C_MODULE_REV; và C6_ERROR = NONE.
+
+C6_NEEDS_FIX_IF
+    C6_CHECK = NEEDS_FIX khi: C6 chạy ngoài C_RUN_ORDER; thiếu/sai field schema; dùng patch/delta thay full state; thiếu hoặc sai C6_SOURCE_A_REV; không dùng NONE / NOT_APPLICABLE khi không dựa A_STATE; C6_FINAL thiếu một trong sáu nhóm; C6_SOURCE_LIST liệt kê nguồn chưa đọc; nguồn yếu/không đủ tin cậy nhưng không ghi giới hạn; yêu cầu bắt buộc nguồn tin cậy nhưng không tìm được nguồn đủ tin cậy; bịa nguồn; bịa kết quả; C6_KEY_FINDINGS vượt nội dung nguồn; biến evidence thành clinical decision; biến source thành dữ kiện bệnh nhân; tự áp dụng guideline vào bệnh án; tự tạo chẩn đoán/hướng điều trị/chỉ định/thuốc/đơn thuốc/cảnh báo/bệnh trình; đọc C khác mặc định; dùng O output/rendered output/hidden memory/web guideline ngoài source policy; sửa A/C/G/O; tạo field ngoài schema; tạo C6_FOR_O*, C6_SOURCE_C_REV, UPDATED_AT, C6_CITATIONS, C6_REFERENCE, C6_EVIDENCE_SUMMARY hoặc C6_QUERY; C6_CHECK = PASS trong bất kỳ trường hợp sai trên; hoặc C6_CHECK = NEEDS_FIX nhưng C6_ERROR không rõ lỗi.
+
+C6_ERROR_RULE
+    Nếu C6_CHECK = PASS thì C6_ERROR = NONE.
+    Nếu C6_CHECK = NEEDS_FIX thì C6_ERROR ghi rõ lỗi/phần thiếu, gồm lỗi nguồn đọc, source policy, thiếu nguồn tin cậy, schema, C6_FINAL, source rev, evidence vượt nguồn, boundary A/C/O hoặc tạo clinical decision.
+    Khi không có nguồn đủ tin cậy: không bịa nguồn/kết quả; C6_SOURCE_LIST ghi không tìm được nguồn đủ tin cậy/phù hợp; C6_KEY_FINDINGS không bịa; C6_LIMITATIONS ghi giới hạn; nếu yêu cầu bắt buộc nguồn tin cậy thì C6_CHECK = NEEDS_FIX.
+
+C6_REUSE_RULE
+    CREATE khi C6 formal chạy và chưa có C6_STATE cũ: xuất full C6_STATE và đặt C6_REV = 1.
+    UPDATE khi C6 formal chạy và nội dung thật C6 thay đổi do user input, full current A_STATE, source policy hoặc source lookup hợp lệ: xuất full C6_STATE mới và tăng C6_REV.
+    REUSE khi C6 formal chạy nhưng nội dung thật không đổi: xuất full C6_STATE, giữ C6_REV, không ghi “reuse C6”, không ghi “giữ nguyên như trước” và không dùng patch/delta.
+
+C6_REV_RULE
+    CREATE đặt C6_REV = 1.
+    UPDATE tăng C6_REV khi nội dung thật đổi.
+    REUSE giữ C6_REV.
+    Nếu recorded dependency metadata đổi nhưng semantic C6 content/CHECK/ERROR không đổi thì giữ C6_REV và refresh actual subset; unrelated unrecorded Ax change không tự stale C6.
+    Nếu C6 không dựa vào A_STATE thì C6_SOURCE_A_REV = NONE / NOT_APPLICABLE.
+    Nếu C6 không chạy formal thì không in C6_STATE, không patch/delta, không tăng C6_REV và không cập nhật C6_SOURCE_A_REV.
+    C6 không tự tạo C_MODULE_REV chung.
+
+C6_END
+    C6 hoàn tất khi đã tạo/cập nhật/reuse full C6_STATE hợp lệ và đã kiểm C6_CHECK.
+    Sau C6, chuyển module C kế tiếp theo G_STATE.C_RUN_ORDER; không giả định C7 luôn chạy kế tiếp.
+    Nếu C6 là C cuối trong C_RUN_ORDER thì STEP C kết thúc và chuyển C_GATE theo contract chung.
+    Không chuyển thẳng sang O trước khi STEP C và C_GATE hoàn tất; không tự gọi C7/O12 và không sửa A/C/G/O.
+
+<<< END C6
+
+####################################################################################################
+
+####################################################################################################
+
+C7 — BỆNH TRÌNH / DIỄN BIẾN ĐIỀU TRỊ / TÌNH TRẠNG RA VIỆN
+Version: BA S-G-A-C-O V4
+Update: 01/08/2026 GMT+7 — whole-course progression and controlled surface realization
+
+C7_ROLE
+    C7 là module C selective xử lý bệnh trình, diễn biến điều trị theo ngày và tình trạng bệnh nhân lúc ra viện từ nguồn hợp lệ đã có.
+    C7 chỉ chạy formal khi C7 nằm trong G_STATE.C_RUN_ORDER và khi chạy phải tạo/cập nhật/reuse full C7_STATE.
+    Khi chạy formal, C7 tự tạo và tự kiểm C7_COMPONENT_PROGRESSION_PLAN, C7_FOR_O4, C7_RENDER_SCOPE, C7_TREATMENT_END_LINE và C7_DISCHARGE_CONDITION theo full current A_STATE và current user input; không phụ thuộc output plan.
+    C7_RENDER_SCOPE chỉ là metadata chọn phần C7_FOR_O4 đã có để O4 trình bày; không được quyết định component, progression, phase, terminal state, wording, clinical generation hoặc làm thay đổi full C7_FOR_O4.
+    C7 không sở hữu ngày ra viện: nguồn canonical duy nhất là A14_STATE.A14_DISCHARGE_DATE.
+
+C7_ALLOWED_SOURCE
+    C7 chỉ được đọc sau khi nằm trong G_STATE.C_RUN_ORDER formal:
+        1. User input ROUND hiện tại: số ngày bệnh trình, ngày vào viện, ngày điểm bệnh, intent ra viện/xin ra viện/chuyển viện/tổng kết/kết thúc, tình trạng từng component lúc ra viện, tên bệnh viện nhận rõ ràng, plan component/ngày/khoảng ngày, yêu cầu exact wording, correction/withdrawal, append/extend/rewrite explicit và explicit intent hiển thị/in/render/show/display toàn bộ current bệnh trình chỉ để resolve C7_RENDER_SCOPE.MODE.
+            Full-presentation intent này không tự là clinical REWRITE, không tạo/sửa C7_FOR_O4 hoặc clinical content, không đổi APPEND/progression/phase/terminal state/wording/treatment và không chuyển visible-render ownership từ O4 sang C7.
+        2. G_STATE metadata: ROUND_ID, STATE_VERSION, RUN_MODE và C_RUN_ORDER; C7 không đọc danh sách hoặc thứ tự output.
+        3. A_GATE hợp lệ, full current A_STATE và A_MODULE_REV.
+        4. A1_STATE.A1_TIME chỉ để ngày vào viện, ngày bắt đầu/lịch ngày điều trị và continuity C7_FOR_O4; không dùng để lấy/tự tính ngày ra viện.
+        5. A14_STATE.A14_DISCHARGE_DATE là nguồn duy nhất cho ngày cuối C7_FOR_O4, ngày end-line và consistency condition; A14_STATE.A14_TREATMENT_DAYS chỉ để kiểm số block inclusive; chỉ dùng khi A_GATE_STATUS = PASS và A14_CHECK = PASS và field hợp lệ. C7 không cần đọc A14_DISCHARGE_DATE_SOURCE để tạo nội dung.
+        6. C7_STATE hiện hành chỉ để CREATE/UPDATE/REUSE/append structured plan, C7_FOR_O4, end-line và condition sau revalidation.
+    C7 không được lấy ngày ra viện từ raw user input, A1_TIME, C7_STATE cũ, C7_FOR_O4 cũ, output/rendered output, hidden memory hoặc field trung gian khác.
+    C7 không dùng O output, rendered output, hidden memory, web/guideline, A_STATE patch/delta, A14 như bệnh trình có sẵn hoặc C1-C6_STATE.
+
+C7_ALLOWED_ACTION
+    C7 được CREATE/UPDATE/REUSE full C7_STATE, parse/resolve/check C7_COMPONENT_PROGRESSION_PLAN, tạo ngày thật dd/mm/yyyy, tạo/revalidate C7_FOR_O4/end-line/condition, tạo/revalidate C7_RENDER_SCOPE và ghi C7_SOURCE_A_REV/C7_CHECK/C7_ERROR.
+    C7 không chạy ngoài C_RUN_ORDER, không sửa A/C/G/O, không render O, không quyết định output plan và không tạo C_MODULE_REV.
+
+C7_ALLOWED_WRITE
+    C7 chỉ ghi full C7_STATE khi chạy formal; không ghi patch/delta hoặc field ngoài schema.
+
+C7_STATE_SCHEMA
+    C7_STATE gồm đúng các field:
+        STATE_VERSION: <lấy từ G_STATE>
+        C7_REV: <revision nội dung thật C7>
+        C7_SOURCE_A_REV: <actual dependency-subset map chỉ từ A1_REV/A14_REV đã dùng>
+        C7_COMPONENT_PROGRESSION_PLAN: <full structured MINIMAL_RESOLVED-RANGE plan>
+        C7_FOR_O4: <text/list bệnh trình hoàn chỉnh hoặc NONE>
+        C7_RENDER_SCOPE: <{MODE: DELTA | FULL, SELECTED_DAY_HEADERS: <ordered exact-header list> | []}>
+        C7_TREATMENT_END_LINE: <một câu kết thúc điều trị canonical có ngày dd/mm/yyyy hoặc NONE>
+        C7_DISCHARGE_CONDITION: <đúng 5 bullet khi C7 PASS và có ending intent, hoặc NONE>
+        C7_SOURCE_NOTE: <tóm tắt provenance USER/A_STATE/PERSISTED/DEFAULT/OLD_DAY_LOCK, dữ kiện thiếu/giới hạn; hoặc NONE>
+        C7_CHECK: PASS | NEEDS_FIX | BLOCKED
+        C7_ERROR: NONE | <lỗi cụ thể hoặc dữ kiện cần làm rõ>
+    C7_TREATMENT_END_LINE là đúng một dòng, không bullet/newline/heading/metadata/placeholder và không chứa “Chủ nhiệm khoa.”.
+
+C7_RENDER_SCOPE_RULE
+    C7_RENDER_SCOPE có đúng hai key theo thứ tự: MODE; SELECTED_DAY_HEADERS. MODE chỉ là DELTA hoặc FULL; không thêm nested key, run ID, round ID, touched marker, per-day lifecycle ledger hoặc bản sao nội dung bệnh trình.
+    Mỗi item SELECTED_DAY_HEADERS phải là exact full header `Ngày điều trị thứ [n] ([dd/mm/yyyy])` đã có đúng một lần trong full C7_FOR_O4; không bare date, partial header, inferred index hoặc fabricated header. List không duplicate và phải theo canonical order của C7_FOR_O4.
+    FULL dùng duy nhất `{MODE: FULL, SELECTED_DAY_HEADERS: []}` và yêu cầu O4 render toàn bộ full C7_FOR_O4. C7 chỉ chọn FULL khi current user explicit yêu cầu show/render/print/display toàn bộ bệnh trình; full presentation intent không tự là clinical REWRITE.
+    DELTA chọn các visible daily block được tạo/thay đổi trong current formal run. CREATE mới chọn tất cả header mới; APPEND chọn chỉ appended headers xác định từ old/new course boundary; REWRITE chọn mọi physical day block thực sự bị rebuild do accepted rewrite hoặc có exact header/body slice khác prior full C7_FOR_O4; REWRITE+APPEND lấy canonical-order union của changed/rebuilt old blocks và appended blocks. Generic UPDATE dùng affected/rebuilt physical days hiện có, và với phần còn lại so sánh exact prior/resulting header-body slices để chọn mọi new hoặc byte-changed block; không semantic diff và không persist kết quả thành ledger.
+    Byte-identical unrelated/revalidated block không được chọn. DELTA chỉ được [] khi formal REUSE/current-contract refresh không đổi visible daily block và không có explicit FULL intent, hoặc khi C7 non-PASS không có render authority. Nếu CREATE/APPEND/REWRITE/UPDATE tạo hoặc thay đổi visible block thì DELTA phải chứa đủ tất cả applicable header.
+    C7_RENDER_SCOPE phải được recompute/replace trên mọi formal CREATE/UPDATE/REUSE và chỉ mô tả selection của formal run đó; không copy selector cũ làm current authority. REUSE không explicit FULL phải reset DELTA/[]; REUSE có explicit FULL phải FULL/[]. C7 không formal run thì không refresh state/scope.
+    C7_RENDER_SCOPE không bao giờ là NONE. Khi C7_CHECK = NEEDS_FIX/BLOCKED bắt buộc `{MODE: DELTA, SELECTED_DAY_HEADERS: []}`; selector này không có render authority và không làm yếu failed-state precedence.
+    Không thêm hoặc dùng field ngoài đúng 11 field trên, gồm C7_SOURCE_C_REV, UPDATED_AT, C7_FINAL, C7_FOR_O3, C7_FOR_O8, C7_TREATMENT_COURSE, C7_DISCHARGE_STATUS, C7_TREATMENT_END_TYPE hoặc C7_TRANSFER_HOSPITAL.
+
+        C7_COMPONENT_PROGRESSION_PLAN dùng đúng grammar MINIMAL_RESOLVED-RANGE:
+        1. Plan có đúng sáu key theo thứ tự: PLAN_VERSION = 1; COURSE_START_DATE = <dd/mm/yyyy>; COURSE_END_DATE = <dd/mm/yyyy>; COURSE_DAY_COUNT = <positive integer>; COMPONENT_COUNT = <non-negative integer>; COMPONENTS = <ordered component list> | NONE.
+        2. COURSE_END_DATE là ngày cuối course được render, không tự là tuyên bố ra viện; khi có A14 discharge canonical phải exact-match A14. Course-only không ending intent dùng ngày cuối course được yêu cầu.
+        3. COMPONENTS = NONE chỉ khi COMPONENT_COUNT = 0 và không có symptom/sign/routine component cần track; khi C7 được chọn, trường hợp này làm clinical gate fail và không render daily defaults/bốn nhóm nền. Bốn nhóm nền chỉ render trong daily block của plan đã PASS clinical gate.
+        4. Mỗi component có đúng chín key theo thứ tự: COMPONENT_ID; CATEGORY; CANONICAL_LABEL; LOCATION; SIDE; SOURCE_REFERENCE; FINAL_STATE; TERMINAL_DAY; RANGES.
+        5. Mỗi range có đúng bảy key theo thứ tự: DAY_START; DAY_END; SEMANTIC_STATE; SOURCE; PRIORITY; EXACT_WORDING_REQUIRED; USER_STATE_TEXT.
+        6. CATEGORY = SYMPTOM | ROUTINE_DOMAIN | OBJECTIVE_SIGN.
+        7. SEMANTIC_STATE = BASELINE | UNCHANGED | LOW_IMPROVEMENT | MODERATE_IMPROVEMENT | MAJOR_IMPROVEMENT | MINIMAL_REMAINING | RESOLVED | SOURCE_WORSENING | SOURCE_DEFINED. SOURCE_DEFINED/SOURCE_WORSENING chỉ là sourced anchor USER/A_STATE, DEFAULT không được tạo.
+        8. SOURCE = USER | A_STATE | PERSISTED | DEFAULT | OLD_DAY_LOCK. PRIORITY = USER_REWRITE | OLD_DAY_LOCK | USER | A_STATE | PERSISTED | DEFAULT. EXACT_WORDING_REQUIRED = YES | NO.
+        9. Dùng exact NONE cho LOCATION/SIDE không có, TERMINAL_DAY chưa terminal, USER_STATE_TEXT không có exact/source-defined phrase và COMPONENTS khi count = 0. RANGES không được NONE với component hiện hữu.
+        10. SOURCE_REFERENCE dùng canonical module/field/source identifier rõ, không prose mơ hồ, rendered output hoặc O output.
+            11. Không thêm nested key PLAN_STATUS, PLAN_SOURCE, DIRECTIVES, RESOLVED_CELLS, CREATED_FROM_REV, COMPONENT_SOURCE, BASELINE_SEVERITY, RENDER_SLOT, DISPLAY_ORDER, RANGE_ID, RANGE_STATUS, ORIGINAL_TEXT, CORRECTION_OF, WITHDRAWAL_OF hoặc rendered sentence field.
+            12. CANONICAL_LABEL là stable clinical object/complaint/finding/function identity, hoặc source phrase không thể tách an toàn mà vẫn giữ đúng nghĩa; SOURCE_REFERENCE vẫn chỉ trỏ authoritative source. Modifier taxonomy/subtype dưới đây chỉ là logic transient, tuyệt đối không thêm key/schema data.
+
+C7_LOGIC_RULES
+        Daily physical structure:
+        1. C7_FOR_O4 là bệnh trình canonical render-ready: mỗi ngày có header “Ngày điều trị thứ [n] ([dd/mm/yyyy])”, giữ sáu logical slot theo thứ tự toàn thân; biểu hiện lâm sàng chính; biểu hiện lâm sàng kèm/gộp; huyết động; ăn uống-ngủ; đại tiểu tiện. Slot 2-3 là VÙNG BIỂU HIỆN LÂM SÀNG.
+        2. Mỗi ngày có 4-6 physical bullet “-”: bắt buộc đúng một bullet toàn thân, huyết động, ăn uống-ngủ và đại tiểu tiện; xen giữa toàn thân và huyết động có 0-2 clinical-manifestation bullet. Thường có 5-6 bullet; không fill để đủ sáu.
+        3. Một active/transition SYMPTOM/OBJECTIVE_SIGN dùng một clinical-manifestation bullet; nhiều component cùng vị trí/bên/cơ quan có thể gộp ngắn khi từng identity/state vẫn xác định được; nhóm khác cơ quan dùng bullet còn lại. Nếu hơn hai nhóm không thể gộp an toàn mà vẫn giữ identity/state thì NEEDS_FIX, không tạo bullet thứ ba. Không có component thật thì không tạo companion giả.
+        4. Vùng biểu hiện lâm sàng được vắng khi không có active/transition component cần hiển thị. Component terminal chỉ render tại TERMINAL_DAY; mọi daily block sau TERMINAL_DAY, kể cả final day, phải omit component đó nếu không có sourced reappearance.
+        5. Bullet ngắn, trực tiếp; không paragraph/label/placeholder/no-data/plan metadata/provenance/treatment/thuốc/chỉ định/tư vấn/tái khám/dặn dò leak. C7_FOR_O4 không chứa end-line, câu giải quyết/chuyển viện hoặc chữ ký kết thúc.
+        6. Stable baseline line hoặc same-phase wording được lặp khi state/source không đổi và không là duplicate lỗi. Duplicate được kiểm theo component-state map; không đổi synonym/qualifier hoặc bịa dữ kiện để làm câu khác.
+            7. ĐIỂM BỆNH là special block duy nhất: không bullet, ngay sau physical bullet cuối ngày, trước header sau, không lặp/dòng thừa.
+            8. Pipeline bắt buộc cho clinical surface là: decompose source thành candidate component → xây stable identity → phân loại transient modifier → resolve state riêng cho từng component/day → realize từng complete clause → semantic compatibility validation từng clause → merge các clause đã hoàn chỉnh → final attachment/bullet validation. Cấm render raw compound rồi append một trailing state text.
+            9. Merge chỉ dùng dấu phẩy/chấm phẩy/liên từ khi identity, modifier attachment, location, side, radiation, numeric anchor và state của từng clause vẫn rõ. Parity chỉ đảo complete realized clause, không đảo/tách attachment. Nếu không fit an toàn trong tối đa hai clinical bullet thì ERR-C7-SURFACE-MERGE và NEEDS_FIX/BLOCKED; không tạo bullet thứ ba, drop component hoặc ép gộp mơ hồ.
+
+    Component eligibility, identity and slot:
+        1. Track SYMPTOM là triệu chứng cơ năng thật có trong current user input/full current A_STATE hoặc component user yêu cầu theo dõi; track ROUTINE_DOMAIN khi user lập plan cho ăn-ngủ, đại tiểu tiện hoặc nhóm nền rõ.
+        2. OBJECTIVE_SIGN chỉ track khi user explicit yêu cầu hoặc direct course source cho thấy dấu thay đổi có ý nghĩa; luôn render tại vùng biểu hiện lâm sàng slot 2-3, có thể gộp với SYMPTOM cùng vị trí/bên/cơ quan. Dấu chỉ có ở khám ban đầu nhưng không có course relevance, dấu bình thường/phủ định hoặc dấu chỉ để đủ bullet không được track.
+        3. Không tạo component từ phủ định/bình thường để fill như “không đau cổ chân”, “không tê bì”, “không hạn chế vận động”, “không sưng nóng đỏ”; không mặc định lấy Lasègue, Schober, phù, da niêm/củng mạc, dấu khám khớp/cơ quan; không lấy xét nghiệm/hình ảnh, chẩn đoán, hạn chế chức năng, vị trí/bên/cơ quan/tần suất/tính chất/mức độ mới không source.
+            4. Mỗi source manifestation bắt buộc được phân tích thành STABLE_IDENTITY + TRANSIENT_SOURCE_MODIFIERS. STABLE_IDENTITY gồm clinical object/complaint/finding/function/activity, anatomy/affected structure, location, side, radiation, structural qualifier cần phân biệt component và indivisible lexical term. CANONICAL_LABEL chỉ chứa stable identity hoặc atomic source phrase không thể tách an toàn; không mặc định dùng full source phrase hay giữ mutable progression modifier trong immutable identity.
+            5. Modifier taxonomy transient, không phải enum/schema: DEGREE (mức độ/cường độ); ABNORMAL_DIRECTION (tăng/giảm so với bình thường); PERSISTENCE (còn/vẫn); FUNCTIONAL_LIMIT (hạn chế/khó/giảm khả năng); FREQUENCY_QUANTITY (count/value/unit/grade/time scope); TEMPORAL (course/time qualifier); TERMINAL (hết/không còn/bình thường); STRUCTURAL_IDENTITY (object/anatomy/location/side/radiation/attachment); INDIVISIBLE_LEXICAL_TERM (cụm không thể tách chắc chắn). Modifier mutable chỉ dùng cho baseline, scheduling, subtype hoặc sourced current state, không tự kế thừa sang generated day.
+            6. Component identity là `CATEGORY | CANONICAL_LABEL | LOCATION | SIDE`; LOCATION/SIDE giữ source sau safe canonical normalization, không suy diễn. Object, anatomy, affected structure, location, side, radiation và attachment phải được giữ; vì schema không có radiation key, giữ radiation đúng một lần trong CANONICAL_LABEL hoặc LOCATION phrase, không bỏ/đổi bên/lưu trùng. Same normalized identity merge; different identity không merge vì label gần giống.
+            7. COMPONENT_ID deterministic từ stable identity, unique và không đổi khi chỉ degree/direction/persistence/functional state/frequency/current state thay đổi. Component theo first source appearance; nếu hòa sort SYMPTOM → ROUTINE_DOMAIN → OBJECTIVE_SIGN → COMPONENT_ID. Range sort DAY_START rồi DAY_END.
+            8. Lexical fail-safe: không strip prefix/token bằng regex đơn giản. Nếu tách từ như “tăng”, “giảm”, “còn”, “hạn chế”, “nhiều” có thể đổi identity hoặc modifier/attachment không chắc, giữ cụm như INDIVISIBLE_LEXICAL_TERM nếu vẫn realize an toàn; nếu không thì ERR-C7-COMPONENT-DECOMPOSITION và NEEDS_FIX/BLOCKED, nêu exact phrase và hỏi rõ object/modifier/location/side/radiation, tuyệt đối không đoán.
+            9. Ăn-ngủ và đại tiểu tiện có thể là ROUTINE_DOMAIN trong plan nhưng chỉ render ở fixed routine slot 5-6, không vào vùng biểu hiện lâm sàng. Tiểu nhiều chỉ ở elimination slot. Mệt mỏi mặc định slot 2-3; chỉ ở toàn thân khi source/user rõ là general-condition state. Một component mỗi ngày chỉ render một slot.
+            10. `CLINICAL_COMPONENT_COUNT` chỉ là giá trị logic nội bộ, không là field/key: đếm tracked component có CATEGORY=SYMPTOM hoặc CATEGORY=OBJECTIVE_SIGN trong COMPONENTS, kể cả component đã RESOLVED/đang omit sau TERMINAL_DAY; không tính từ số clinical bullet đang hiển thị trong một ngày. Mọi CREATE/UPDATE/APPEND/REWRITE/REUSE chỉ được tiếp tục khi CLINICAL_COMPONENT_COUNT >= 1; COMPONENT_COUNT không thay thế gate này. ROUTINE_DOMAIN chỉ được tồn tại cùng ít nhất một clinical component, không đủ điều kiện tạo bệnh trình một mình. Clinical gate được đánh giá trước progression/render và mọi nghĩa vụ output từ A14/discharge/transfer/end-line/daily defaults; gate fail có precedence và không rule downstream nào được tạo output.
+            11. Nếu CLINICAL_COMPONENT_COUNT=0 vì không có eligible symptom/sign, chỉ có ROUTINE_DOMAIN, diagnosis, history không có current manifestation, thuốc, xét nghiệm/hình ảnh, demographic, normal/negative/irrelevant sign hoặc sau correction/withdrawal làm mất clinical component cuối: NEEDS_FIX/BLOCKED với ERR-C7-SYMPTOM-CONTENT; không suy/tạo synthetic symptom hoặc giữ component đã bị rút để vượt gate.
+            12. Gate fail thì dừng trước render: C7_FOR_O4=NONE, C7_TREATMENT_END_LINE=NONE, C7_DISCHARGE_CONDITION=NONE, không tạo ĐIỂM BỆNH và không gửi clinical content sang O3/O4. C7_ERROR phải kèm câu hỏi ngắn: “Chưa xác định được triệu chứng hoặc dấu hiệu lâm sàng chính để viết bệnh trình. Vui lòng bổ sung biểu hiện cần theo dõi, ví dụ đau, sưng, tê bì, ho, khó thở, mệt mỏi hoặc dấu hiệu khách quan có diễn biến.”
+
+    Plan range validation and component progression:
+        1. DAY_START/DAY_END là positive integer, DAY_START <= DAY_END <= COURSE_DAY_COUNT. Mỗi component×day có đúng một resolved state; gap được default-fill; adjacent cell chỉ compress khi semantic state/source/priority/exact flag/user text đều giống.
+        2. Identical normalized directive overlap được deduplicate. Different-state/text/exact same-priority overlap là conflict; out-of-course không truncate. FINAL_STATE exact-match final cell; RESOLVED đầu tiên xác định TERMINAL_DAY.
+        3. Mỗi component có trajectory độc lập; không bắt cùng mức/chuyển phase/final day. Default rank monotonic, không worsening/relapse/SOURCE_WORSENING/resurrection. Sourced USER/A_STATE worsening/reappearance dùng SOURCE_WORSENING và recompute terminal/final.
+        4. RESOLVED đầu tiên tại day N đặt TERMINAL_DAY=N; range N..course end vẫn semantically RESOLVED. C7_FOR_O4 render “đã hết/không còn” đúng một lần tại day N, omit component từ N+1 đến hết course và không final-day reconfirmation nếu N trước final day. C7_DISCHARGE_CONDITION vẫn xác nhận final state riêng. Không cross-component state transfer hoặc tráo state khi merge/order variation.
+        5. Phase-first, wording-second: trước khi viết bất kỳ câu ngày nào, C7 phải xác định phase schedule cho từng component theo COURSE_DAY_COUNT, user final target, exact user day/range anchor, valid source progression, current valid persisted C7_STATE được phép reuse và scheduler/bounded variability hiện hành. Sau khi phase của từng component×day đã khóa mới chọn cách diễn đạt; không chọn câu trước rồi suy ngược phase, không đổi phase để hợp câu, không dùng variation câu chữ để làm giả chuyển giai đoạn và không tạo progression vượt final target hoặc exact user range. Không thay scheduler hiện hành bằng tỷ lệ cứng dùng cho mọi bệnh trình.
+        6. Range chỉ nén semantic plan, không làm mất trajectory riêng: không dùng một range chung để kéo state component này sang component khác, không dùng range như rendering unit và không cache/reuse một generated surface clause cho toàn range. Trước controlled wording, mỗi range phải được bung transient thành từng component×day cell rồi realize riêng theo phase đã khóa.
+
+    Day 1 baseline:
+        1. A1_TIME là day 1 và semantic state BASELINE. Mỗi generated clinical/routine clause ngày 1 phải là BASELINE_SOURCE_ASSERTION: lấy subject và current state từ authoritative source, giữ identity/location/side/radiation/attachment, chỉ assert tình trạng tại day 1 và không tự tạo treatment-progression comparison hay ngụ ý course trước nhập viện. Không sao chép toàn bộ khám sơ bộ; chỉ giữ component cần track, bốn nhóm nền và objective sign thật sự cần baseline.
+        2. First progression transition là day >= 2. Explicit range “N ngày đầu chưa thay đổi” khi không có pre-admission course source vẫn canonicalize day 1=BASELINE và day 2..N=UNCHANGED, không biến day 1 thành UNCHANGED. Có explicit pre-admission course source thì giữ exact/source-defined wording và provenance, không biến sourced wording thành generated default. Course một ngày dùng day 1 vừa baseline vừa final observation, không bịa progression; explicit sourced final state dùng SOURCE_DEFINED.
+        3. Generated treatment improvement chỉ bắt đầu từ day 2. Day 1 không được tự viết `giảm ít`, `giảm vừa`, `giảm nhiều`, `còn rất ít`, `hết` hoặc `không còn` như kết quả điều trị; chỉ giữ wording diễn biến trước nhập viện khi current user/source yêu cầu exact pre-admission progression và SOURCE_DEFINED/exact compatibility PASS. Day 1 generated improvement trái rule là ERR-C7-BASELINE-DAY1.
+
+    User component/day-range plan resolution:
+        1. Cell precedence: USER_REWRITE; OLD_DAY_LOCK; current USER; newer direct A_STATE; valid PERSISTED; DEFAULT. Override chỉ đúng component/day, không cross-component/out-of-range.
+        2. “N ngày đầu” = day 1..N; “ngày cuối” = COURSE_DAY_COUNT; “trước ra viện một ngày” = COURSE_DAY_COUNT-1 chỉ khi canonical discharge boundary xác định; “Ngày x-y” inclusive; “Ngày x” = x..x.
+        3. “N ngày sau” và “còn lại” chỉ resolve khi có đúng một preceding resolved range thuộc cùng COMPONENT_ID, đứng trước directive hiện tại và không ambiguous: “N ngày sau” lấy N ngày ngay sau range đó; “còn lại” lấy ngày sau range đó đến COURSE_DAY_COUNT. Không có range, có nhiều candidate không chọn được, candidate thuộc component khác hoặc range trước vượt course thì ERR-C7-USER-PLAN-RANGE và NEEDS_FIX/BLOCKED; không gắn vào day 1, không mượn range component khác và không đoán.
+        4. Trước directive classification, phân tách transient semantic attachment, không field/schema: COURSE_BOUNDARY_TOKEN chỉ xác định COURSE_START_DATE, COURSE_END_DATE hoặc COURSE_DAY_COUNT của toàn course, gồm course duration/start/end từ current instruction hoặc canonical A1/A14 boundary; token này không phải progression marker, không gắn state và không tự tạo EXPLICIT_RANGE_STATE/FINAL_DAY_TARGET. PROGRESSION_RANGE_MARKER chỉ là day/range/relative-range marker gắn trực tiếp về grammar hoặc semantic với một progression state và component/group/routine cụ thể, xác định duy nhất mapping component×range×state. Final-only marker chỉ có hiệu lực khi gắn trực tiếp với progression state là target ngày cuối/lúc ra viện/cuối đợt, không phải COURSE_END_DATE đơn thuần.
+        5. Thứ tự resolve bắt buộc là: xác định course boundary/length → component scope → USER progression state → attachment của range/final-only marker với state/component → loại mọi COURSE_BOUNDARY_TOKEN khỏi progression-range candidate → phân loại đúng một directive class cho mỗi progression directive/component scope → final-target resolution → DEFAULT gap fill → scheduler. EXPLICIT_RANGE_STATE chỉ khi có progression state rõ và attached PROGRESSION_RANGE_MARKER cho mapping component×range×state duy nhất; FINAL_DAY_TARGET chỉ khi có attached final-only marker; WHOLE_COURSE_PROGRESSION khi có progression state và component scope rõ nhưng không có attached progression-range/final-only marker, dù course boundary/length có mặt; DEFAULT_PROGRESSION chỉ khi không có USER progression state. Cùng input có thể có class khác nhau cho các directive/component scope khác nhau nếu từng attachment đều duy nhất.
+        6. Sau classification, WHOLE_COURSE_PROGRESSION chỉ tạo USER progression cell từ day 2 cho đúng component set mà grammar user chỉ tới; EXPLICIT_RANGE_STATE tạo USER cell đúng attached range và giữ day 1 BASELINE theo contract; FINAL_DAY_TARGET giữ final-target behavior hiện hành; DEFAULT_PROGRESSION mới được tạo DEFAULT cell. Course boundary và attached progression range/final-only marker có thể cùng tồn tại và phải resolve độc lập; marker/state/range của một component không được chuyển sang component khác. A_STATE/PERSISTED/DEFAULT không được reinterpret WHOLE_COURSE_PROGRESSION thành final-only target.
+        7. Parse nhiều component/routine plan độc lập. Identical overlap deduplicate; contradictory overlap NEEDS_FIX/BLOCKED; gap chỉ fill cell thật sự trống sau scope/attachment resolution bằng SOURCE/PRIORITY DEFAULT; out-of-course NEEDS_FIX/BLOCKED, không truncate. Không xác định duy nhất token thuộc course boundary hay attached progression/final scope, hoặc marker không xác định duy nhất component×range×state, thì ERR-C7-USER-PLAN-RANGE/ERR-C7-USER-PLAN-CONFLICT và NEEDS_FIX/BLOCKED; không đoán, không partial plan/render và không cho DEFAULT chiếm USER cell.
+        8. Explicit correction thay đúng component/range, invalidate derived plan/render/condition liên quan và preserve unrelated cell. Explicit withdrawal bỏ đúng directive/range rồi default-fill; target mơ hồ là conflict.
+            9. Baseline source wording là fact/source phrase, không tự là exact progression wording. Explicit USER progression hoặc A_STATE progression chỉ exact cho mapped component/day range. User yêu cầu nguyên văn thì EXACT_WORDING_REQUIRED=YES và USER_STATE_TEXT giữ exact state phrase, không giữ toàn instruction/metadata hay cho baseline modifier tràn sang ngày sau. Precedence wording: targeted USER_REWRITE > explicit USER progression > explicit A_STATE progression > generated safe surface > NEEDS_FIX.
+            10. Exact awkward phrase được giữ nếu identity/source/range/attachment và higher-order invariant hợp lệ; SOURCE_DEFINED giữ exact sourced state và SOURCE_WORSENING giữ sourced direction, không rank/interpolate/đảo direction. Exact conflict không được silent normalize/làm đẹp: dùng ERR-C7-EXACT-WORDING-CONFLICT (hoặc ERR-C7-USER-PLAN-CONFLICT khi overlap/scope), NEEDS_FIX/BLOCKED và hỏi user xác nhận target/state wording.
+
+    Reference progression and bounded variability:
+        1. Ranked phases: BASELINE chỉ là day-1 semantic baseline; UNCHANGED=0; LOW_IMPROVEMENT=1; MODERATE_IMPROVEMENT=2; MAJOR_IMPROVEMENT=3; MINIMAL_REMAINING=4; RESOLVED=5. BASELINE và UNCHANGED khác SEMANTIC_STATE, không compress với nhau chỉ vì cùng reference rank.
+            2. Closed generated semantic equivalence là presentation convention, không phải factual residual: LOW_IMPROVEMENT = `giảm ít` | `cải thiện ít` | `còn nhiều` | `còn mức độ nhiều`; MODERATE_IMPROVEMENT = `giảm vừa` | `cải thiện vừa` | `còn vừa` | `còn mức độ vừa`; MAJOR_IMPROVEMENT = `giảm nhiều` | `cải thiện nhiều` | `còn ít` | `còn mức độ ít`; MINIMAL_REMAINING = `còn rất ít` | `còn mức độ rất ít` | subtype-compatible near-normal form; RESOLVED = `hết` | `không còn` | subtype-compatible terminal form. Equivalence không suy baseline severity, số lượng còn lại, current measurement, numeric residual, normal value, clinical data hoặc transition timing.
+            3. MINIMAL_REMAINING nghĩa là component chưa RESOLVED và bất thường chỉ còn rất nhỏ; chính semantic state này cho phép controlled near-normal residual nhưng không cho phép bịa grade, góc, số đo, tần suất hoặc modifier định lượng. Precedence: targeted USER_REWRITE exact → explicit USER progression → explicit A_STATE progression → SOURCE_DEFINED exact → generated MINIMAL mapping tại Controlled wording → ERR-C7-SURFACE-COMPATIBILITY khi stable subject không kết hợp an toàn với mapping và không có exact current source. Generated mapping không override exact/current sourced wording.
+        4. Xác định final target mỗi component theo thứ tự explicit USER; newer direct A_STATE; valid PERSISTED; discharge/ending intent không contrary = RESOLVED; course-only conservative N=1 BASELINE, N=2 UNCHANGED, N=3-4 LOW, N=5-7 MODERATE, N=8-10 MAJOR, N>=11 MINIMAL. Cùng input/source phải có cùng final state và exact day N; không bounded-shift final state/day.
+        5. N=1 giữ BASELINE/final cùng day và không chia. N>=2 với ranked final target R: day 1=BASELINE; với d=2..N, `REFERENCE_RANK(d)=floor((d-1)*R/(N-1))`; rank 0 sau day 1=UNCHANGED, 1=LOW, 2=MODERATE, 3=MAJOR, 4=MINIMAL, 5=RESOLVED. Day N phải exact final R. Hai adjacent locked anchor giữ trực tiếp, không chạy formula giữa chúng.
+        6. Công thức floor tại khoản 5 chỉ áp DEFAULT_PROGRESSION, FINAL_DAY_TARGET và gap giữa source anchor hiện hành; không override EXPLICIT_RANGE_STATE, USER/A_STATE/PERSISTED/OLD_DAY_LOCK/USER_REWRITE anchor hoặc WHOLE_COURSE_PROGRESSION. Với WHOLE_COURSE_PROGRESSION target rank R=1..4 và N>=2: day 1=BASELINE; d=2..N dùng `WHOLE_RANK(d)=ceil((d-1)*R/(N-1))`, clamp 1..R; day 2 có rank >=1, rank không giảm, day N exact R, không vượt target và không có UNCHANGED sau day 1. R=1 cho day 2..N đều LOW; course ngắn được bỏ phase trung gian, course đủ dài phải đi qua lower rank theo công thức.
+        7. WHOLE_COURSE_PROGRESSION target RESOLVED không dùng ceiling rank 1..5: day 1=BASELINE, day N=RESOLVED, TERMINAL_DAY=N và không generated RESOLVED trước N. N=2 dùng BASELINE→RESOLVED; N=3 dùng BASELINE→MINIMAL→RESOLVED; N>3 với d=2..N-1 dùng `PRE_TERMINAL_RANK(d)=1+floor((d-2)*3/(N-3))`, clamp 1..4, nên day 2=LOW, day N-1=MINIMAL và day N=RESOLVED. Explicit USER/A_STATE/source-defined range cho terminal sớm giữ precedence; presentation selector không được đổi TERMINAL_DAY. N=1 chỉ BASELINE theo one-day handling hiện hành hoặc NEEDS_FIX nếu progression request không thể biểu đạt an toàn.
+        8. Reference schedule không phải exact schedule duy nhất. Chỉ internal DEFAULT transition boundary được shift: N=1-2 không shift; N=3-7 tối đa 1 day; N>=8 tối đa 2 days so với reference. Shift phải giữ day 1/final day-state, phase order, monotonic rank, course boundary, non-empty/non-overlap range và không đè USER/A_STATE/PERSISTED/OLD_DAY_LOCK/USER_REWRITE anchor hoặc explicit terminal/final. Hai schedule trong window đều PASS nếu anchors/final giống và mọi invariant đạt.
+        9. Adjacent cell chỉ compress khi full SEMANTIC_STATE, SOURCE, PRIORITY, EXACT_WORDING_REQUIRED và USER_STATE_TEXT giống; không compress theo rank một mình.
+        10. SOURCE_DEFINED/SOURCE_WORSENING là sourced anchor, không tự có numeric rank. Nếu USER_STATE_TEXT map duy nhất vào approved ranked phase thì dùng rank đó chỉ để check; nếu không map duy nhất thì giữ exact range, không nội suy xuyên qua và không tự gán rank. Default gap không fill an toàn vì thiếu ranked boundary thì ERR-C7-PHASE-ALLOCATION và NEEDS_FIX/BLOCKED. SOURCE_WORSENING chỉ từ USER/A_STATE; DEFAULT không tạo.
+
+    Severity-based relative speed:
+        1. Chỉ dùng baseline severity trực tiếp từ current USER, full current A_STATE hoặc valid persisted source còn hiệu lực; không suy từ diagnosis, location/joint type, age, lab hoặc clinical experience ngoài source.
+        2. Chỉ khi wording/explicit numeric scale cùng thang so sánh an toàn, order: rất nặng/rất nhiều/dữ dội > nặng/nhiều > vừa/trung bình > nhẹ/ít > rất nhẹ/rất ít > hết/không còn. Không so sánh được thì relation logic là UNKNOWN, không thêm field và không tuyên bố component nào nặng/nhẹ.
+        3. Với cùng course/final target và DEFAULT cell: component nặng hơn không chuyển phase cao hơn sớm hơn component nhẹ hơn tại cùng reference boundary và được giữ phase lâu hơn trong bounded window; component nhẹ hơn không chuyển muộn hơn component nặng hơn nếu không có contrary source. Equal/UNKNOWN được dùng cùng reference schedule hoặc bounded shift hợp lệ mà không gán severity relation.
+        4. Severity không shift exact USER/A_STATE range, USER_REWRITE, OLD_DAY_LOCK, valid persisted locked anchor hoặc explicit final state. Canonical component index/day parity chỉ dùng presentation order, tuyệt đối không quyết định progression speed.
+        5. Stagger có căn cứ: phase dài 1-2 ngày có thể giữ các component cùng mức và không bắt buộc tạo độ lệch. Khi một phase dài từ 3 ngày trở lên và có căn cứ rõ component A nhẹ hơn hoặc cải thiện sớm hơn component B, A phải chuyển sang phase kế tiếp sớm hơn B thông thường 1 ngày; với COURSE_DAY_COUNT >= 8 và source/user plan cho phép, có thể sớm hơn tối đa 2 ngày. Stagger phải giữ monotonic rank, không nhảy qua hai phase, không đi lùi, không vượt final target, không vi phạm exact user day/range và không override USER/A_STATE/PERSISTED/OLD_DAY_LOCK/USER_REWRITE anchor.
+        6. Căn cứ nhẹ hơn/cải thiện sớm hơn theo thứ tự an toàn: current user nói rõ component nào nhẹ hơn/cải thiện sớm hơn; current user/source bệnh sử hoặc khám ghi trực tiếp mức độ khác nhau và so sánh được; exact user plan/day/range thể hiện progression khác nhau; source ghi rõ component phụ nhẹ hơn hoặc ít ảnh hưởng chức năng hơn. Nếu không đủ căn cứ, relation logic UNKNOWN: các component được phép cùng phase, chỉ thay đổi cách diễn đạt an toàn, không tạo stagger giả để làm bệnh trình đa dạng.
+        7. Không suy component nhẹ hơn chỉ từ thứ tự xuất hiện trong câu, chẩn đoán, loại khớp/vị trí giải phẫu, tuổi, xét nghiệm, kinh nghiệm lâm sàng ngoài source hoặc nhu cầu làm câu đa dạng. Phân phase sai, nhảy/lùi phase hoặc stagger không nguồn dùng ERR-C7-PHASE-ALLOCATION; tráo state giữa component dùng ERR-C7-COMPONENT-PROGRESSION.
+
+        Controlled wording and order:
+            1. Semantic subtype, directive class, SAFE_FAMILY_LIST, COMPONENT_ORDINAL, FORM_INDEX, peer-member proof và parse-back result đều là transient rule-layer, không field/enum/persisted data. Generated positive closure chỉ gồm: SUBJECT_FIRST_CHANGE = `[SUBJECT] giảm [ít/vừa/nhiều]` | `[SUBJECT] cải thiện [ít/vừa/nhiều]`; SUBJECT_FIRST_RESIDUAL = `[SUBJECT] còn [nhiều/vừa/ít/rất ít]` | `[SUBJECT] còn mức độ [nhiều/vừa/ít/rất ít]`; RESIDUAL_FIRST = `Còn [SUBJECT] mức độ [nhiều/vừa/ít/rất ít]`; RESOLVED = `[SUBJECT] hết` | `Không còn [SUBJECT]`; và SUBTYPE_SPECIALIZED_POSITIVE_FAMILY là safe object/function/measurement/near-normal/terminal family tại các khoản sau. SUBJECT phải giữ component identity, manifestation/finding/function, location, side, radiation, attachment và authoritative peer-member set có source.
+            2. PLAIN_SYMPTOM_OR_COMPLAINT: stable complaint/location là SUBJECT; tách source degree/persistence/frequency; ranked nonterminal có thể dùng change hoặc residual family trong closed equivalence khi tự nhiên; UNCHANGED giữ baseline-compatible state; MINIMAL dùng `còn rất ít` hoặc `còn mức độ rất ít` mà không kế thừa source degree/frequency; terminal dùng `hết` hoặc `không còn`.
+            3. INCREASED_ABNORMAL_FINDING: separable “tăng” là ABNORMAL_DIRECTION, stable object/location có normal reference là SUBJECT; ranked nonterminal dùng object-centred change, residual family chỉ vào SAFE_FAMILY_LIST khi không làm sai nghĩa; UNCHANGED có thể giữ sourced current state. Generated MINIMAL dùng `[stable object/location] gần trở về bình thường`; nếu SUBJECT không kết hợp tự nhiên/chính xác với form này và không có exact current source thì ERR-C7-SURFACE-COMPATIBILITY. RESOLVED dùng `[object/location] trở về bình thường`.
+            4. REDUCED_ABNORMAL_FINDING: bỏ separable raw direction, stable object/function/location có normal reference là SUBJECT; generated ranked state ưu tiên `cải thiện + degree` khi tự nhiên. Generated MINIMAL dùng `[stable object/function/location] gần trở về bình thường`; không bịa grade, góc, mức cảm giác hoặc số đo. Nếu SUBJECT không kết hợp an toàn với form này và không có exact current source thì ERR-C7-SURFACE-COMPATIBILITY. RESOLVED dùng `[object/function/location] trở về bình thường`.
+            5. FUNCTIONAL_LIMITATION: function/activity/location là SUBJECT, limitation/difficulty là FUNCTIONAL_LIMIT; generated LOW/MODERATE/MAJOR dùng function/activity `cải thiện + degree`; residual family chỉ khi template/source tự nhiên; UNCHANGED giữ limitation sourced. Generated MINIMAL dùng `[stable function/activity/location] gần bình thường`; RESOLVED dùng function/activity bình thường hoặc exact source-supported terminal form. Tone/stiffness phân loại vào INCREASED_ABNORMAL_FINDING, REDUCED_ABNORMAL_FINDING, FUNCTIONAL_LIMITATION hoặc PRESENCE_OR_MORPHOLOGY theo stable object, không thêm subtype enum. Các biểu hiện chức năng như đi lại khó khăn, hạn chế vận động, giảm tầm vận động, cầm nắm khó khăn hoặc vận động đau dùng cùng phase logic chung, không lập catalogue riêng. Câu có thể đổi cấu trúc tự nhiên như “hạn chế vận động giảm ít”, “khả năng đi lại cải thiện vừa” hoặc residual tự nhiên nhưng phải giữ component identity, function/activity, location, side, attachment, phase và degree; không tạo chức năng/trạng thái mới ngoài source.
+            6. PRESENCE_OR_MORPHOLOGY và OBJECTIVE_SIGN: manifestation/sign là SUBJECT; degree-bearing change được phép, residual family được phép khi không suy grade mới; MINIMAL dùng `[manifestation/location] còn rất ít` hoặc form tương đương an toàn; terminal dùng `không còn [manifestation]`. OBJECTIVE_SIGN vẫn chỉ render slot 2-3.
+            7. FREQUENCY_QUANTITY_OR_MEASUREMENT: exact count/value/unit/grade/time scope là time-scoped baseline anchor, không là current value ngày sau. Generated qualitative change chỉ dùng conservative object-centred comparison có degree khi an toàn, không lặp baseline number nếu không có current source; MINIMAL không dùng near-normal form khi sẽ ngụ ý measurement không có nguồn. Không invent/interpolate/tính residual/normal value/đổi unit/grade. Current USER/A_STATE value giữ exact qua USER_STATE_TEXT/SOURCE_DEFINED. Không có safe positive family hoặc time scope/value/eligibility mơ hồ thì ERR-C7-NUMERIC-ANCHOR và NEEDS_FIX.
+            8. ROUTINE_DOMAIN giữ fixed routine slot. Generated LOW/MODERATE/MAJOR dùng `[routine subject] cải thiện [ít/vừa/nhiều]`; khi các routine member khác state/source thì decompose thành complete subclause với attachment và degree riêng rồi mới merge. Exact/source-defined current-state wording giữ wording/provenance và không bị ép thành ranked state. MINIMAL/RESOLVED dùng routine-compatible near-normal/current-state family khi mapping hiện hành hoặc source xác định, không ép generic terminal family. Khi current user không yêu cầu progression riêng cho ăn hoặc ngủ, default routine wording từ day 1 là `Ăn uống được, ngủ được.` và được lặp khi không đổi; không tự tạo ăn kém, ngủ kém, tạm được, bình thường hoặc progression ăn/ngủ từ đau, bệnh nặng hay triệu chứng khác. Chỉ tạo progression ăn/ngủ khi current user cung cấp exact state/day/range hoặc yêu cầu progression tương ứng. Ăn uống và giấc ngủ là hai routine member độc lập nhưng có thể merge cùng một bullet: ăn uống kém/cải thiện ít/còn kém/tạm được/cải thiện vừa/được/cải thiện tốt/bình thường; ngủ kém/cải thiện ít/còn kém/tạm được/cải thiện vừa/được/cải thiện tốt/bình thường. `Ăn uống được` và `ngủ được` là trạng thái được/cải thiện tốt, không tự đồng nhất với bình thường; chỉ dùng “bình thường” khi user/source yêu cầu rõ. Nếu user chỉ thay đổi ngủ thì ăn giữ `Ăn uống được`; nếu user chỉ thay đổi ăn thì ngủ giữ `Ngủ được`; không kéo state ăn theo ngủ hoặc ngủ theo ăn.
+            9. SOURCE_TERMINAL_OR_NEGATIVE phải phân biệt sourced terminal transition của tracked component với baseline normal/negative không eligible. Sourced terminal render exact một lần; MINIMAL không áp cho terminal anchor; không phân biệt chắc thì NEEDS_FIX. COMPOUND_MULTI_COMPONENT phải split trước, shared directive chỉ apply mọi component khi grammar/scope rõ, subtype-realize từng clause rồi mới merge.
+            10. Self-contained realization pipeline cho mỗi generated component×day clause là: khóa SEMANTIC_STATE → khóa category/subtype → xây ordered SAFE_FAMILY_LIST chỉ từ positive closure và subtype-compatible family → chọn family deterministic → realize complete clause → parse-back bằng positive grammar/subtype parser → xác minh identity/location/side/radiation/attachment/authoritative peer-member set → yêu cầu đúng một parsed SEMANTIC_STATE và parsed state exact-match plan cell → mới merge → recheck attachment/state sau merge. Generated clause chỉ PASS khi SUBJECT đầy đủ, degree hoặc terminal state đầy đủ, subtype-compatible, không invent data và parse-back duy nhất; không có safe family hoặc parse-back fail thì ERR-C7-SURFACE-COMPATIBILITY, parsed state khác plan thì ERR-C7-PLAN-RENDER-MISMATCH, clause riêng PASS nhưng merge mất attachment/state thì ERR-C7-SURFACE-MERGE.
+            11. Exact/source-defined phrase không silent-normalize theo generated grammar và không qua family selector; giữ wording/provenance nhưng vẫn phải PASS identity/range/attachment/state compatibility. SOURCE_DEFINED hợp lệ không bị ép thành ranked state; user gán ranked target nhưng exact phrase không biểu đạt target an toàn thì ERR-C7-EXACT-WORDING-CONFLICT. Generated clause không tự thêm TEMPORAL/PERSISTENCE modifier; exact/source-defined modifier chỉ giữ khi provenance và compatibility PASS.
+            12. Với plain complaint ranked state, ordered SAFE_FAMILY_LIST có thứ tự ổn định: SUBJECT_FIRST_CHANGE `giảm`; SUBJECT_FIRST_CHANGE `cải thiện`; SUBJECT_FIRST_RESIDUAL không `mức độ`; SUBJECT_FIRST_RESIDUAL có `mức độ`; RESIDUAL_FIRST nếu tự nhiên. Chỉ family subtype-safe được giữ. Mapping mức phải giữ đúng cặp: LOW_IMPROVEMENT = giảm/cải thiện ít ↔ còn nhiều; MODERATE_IMPROVEMENT = giảm/cải thiện vừa ↔ còn vừa; MAJOR_IMPROVEMENT = giảm/cải thiện nhiều ↔ còn ít; MINIMAL_REMAINING = còn rất ít/còn mức độ rất ít/RESIDUAL_FIRST rất ít nếu tự nhiên; RESOLVED = hết/không còn hoặc terminal subtype-compatible. LOW không được viết còn ít/giảm nhiều; MODERATE không được viết còn nhiều; MAJOR không được viết còn vừa; MINIMAL không được viết hết khi chưa RESOLVED; RESOLVED không được viết còn triệu chứng. Wrong level wording là ERR-C7-PLAN-RENDER-MISMATCH; subtype-unsafe hoặc parse-back fail là ERR-C7-SURFACE-COMPATIBILITY. COMPONENT_ORDINAL là thứ tự 1-based trong canonical equal-priority component list trước presentation reorder. Exact/source-defined giữ nguyên; SAFE_FAMILY_COUNT=1 dùng family duy nhất và được lặp; SAFE_FAMILY_COUNT>1 ưu tiên cách subtype-safe chưa dùng cho chính component trong phase hiện tại, không lặp lại ngay khi còn cách an toàn chưa dùng, hết cách an toàn thì được quay lại. FORM_INDEX vẫn transient và chỉ là deterministic fallback/tie-breaker khi nhiều lựa chọn an toàn ngang nhau; không persist selector result, không tạo expected-family proof matrix và không dùng selector để sửa transition day/rank.
+            12a. Với nhiều component cùng ngày và cùng phase, nếu có lựa chọn an toàn thì ưu tiên không để tất cả cùng dùng một nhóm câu `giảm/cải thiện`; phối hợp một component dùng nhóm thay đổi và component khác dùng nhóm `còn/còn mức độ/RESIDUAL_FIRST`, ngày sau có thể đổi vai. Không tính/lưu bảng tổ hợp, không persist combination history và không đặt luật tuyệt đối mọi ngày phải khác chữ. Khi safe combination đã dùng hết thì được lặp lại hoặc đổi thứ tự complete clause nếu proof reorder an toàn. Premature repetition khi safe alternative còn tồn tại dùng ERR-C7-DAILY-DUPLICATE; không dùng raw-text-only duplicate validator và không tạo synonym/qualifier ngoài positive closure chỉ để tránh lặp.
+            13. Chỉ complete clause cùng priority/render tier được canonical/reversed theo day parity; component khác priority giữ priority order, COMPONENT_ORDINAL luôn lấy canonical order. Peer symptom chỉ reorder khi proof cho thấy cùng stable component/location/side/attachment/semantic state, authoritative member set trước-sau exact-equal và phrase không atomic/indivisible: `(DAY_INDEX+COMPONENT_ORDINAL)` lẻ giữ canonical source order, chẵn dùng reversed peer order; proof không đủ thì giữ canonical order. Reorder không mất/thêm member, chuyển attachment, tráo state hoặc tác động progression.
+            14. Terminal subtype-compatible chỉ render đúng một lần tại TERMINAL_DAY; từ N+1 omit như contract hiện hành. Exact valid USER terminal giữ nguyên; numeric absence/normalization chỉ khi semantic/source hỗ trợ, không invent normal number.
+
+    Discharge-date state:
+        1. A14 date chưa có khi no-data/NONE/blank/missing, sai dd/mm/yyyy, stale hoặc A_GATE không hợp lệ.
+        2. Nếu A14 chưa có ngày và không có current ending intent: course theo yêu cầu được phép; C7_TREATMENT_END_LINE = NONE và C7_DISCHARGE_CONDITION = NONE.
+        3. Ending intent gồm ra viện, xin ra viện, chuyển viện, tổng kết ra viện, tổng kết bệnh án có kết thúc, bệnh trình đến ngày ra viện hoặc kết thúc điều trị.
+        4. Có ending intent nhưng A14 chưa xác định được canonical A14_STATE.A14_DISCHARGE_DATE hợp lệ hoặc A14_CHECK != PASS hoặc A_GATE_STATUS != PASS: NEEDS_FIX/BLOCKED; giữ ERR-C7-DISCHARGE-DATE-MISSING với message “A14 chưa xác định được A14_STATE.A14_DISCHARGE_DATE canonical hợp lệ; C7 không sở hữu và không tự tính ngày ra viện”; route về A14; không tạo end-line/condition giả.
+        5. Chỉ khi clinical gate và toàn bộ C7_CHECK đã PASS, đồng thời A14 có ngày hợp lệ, C7 mới tạo/revalidate C7_FOR_O4 đến đúng ngày đó, end-line khác NONE và condition khác NONE; ba field đồng bộ, không phụ thuộc output plan. Clinical gate fail hoặc bất kỳ unresolved C7 error nào override nghĩa vụ A14 dù A14 date/treatment days và ending/transfer intent hợp lệ: cả ba derived output vẫn NONE.
+
+    Course generation to A14 discharge date:
+        1. Không có course cũ: A1_TIME là ngày điều trị thứ 1, A14 date là ngày cuối; tạo từng ngày liên tục inclusive, đúng daily structure 4-6 bullet. Số daily block phải bằng `calendar_difference(A1_DATE, A14_DISCHARGE_DATE) + 1`; nếu A14_TREATMENT_DAYS là positive integer thì số block phải bằng field đó. Thiếu start date, start sau A14 date, không xác định khoảng ngày hoặc invariant count sai: NEEDS_FIX/BLOCKED; không bịa và không sửa A14 date/N.
+        2. Course cũ trước A14 date: preserve OLD_DAY_BLOCKS hợp lệ và corresponding old plan cell theo OLD_DAY_LOCK rồi append đến ngày A14.
+        3. Course cũ đúng A14 date: chỉ REUSE/UPDATE sau revalidation. Course cũ sau A14 date: không tự cắt, NEEDS_FIX với ERR-C7-COURSE-AFTER-DISCHARGE-DATE.
+        4. User đổi ngày discharge chỉ có hiệu lực sau A14 chuẩn hóa ngày mới; UPDATE/REWRITE, không reuse end-line/condition cũ.
+        5. APPEND chỉ đọc previous days từ current C7_STATE.C7_FOR_O4 và corresponding plan từ current C7_COMPONENT_PROGRESSION_PLAN; preserve OLD_DAY_BLOCKS/old cell hợp lệ, ghi SOURCE/PRIORITY OLD_DAY_LOCK và không lấy output đã render. Current non-REWRITE plan chỉ áp new day. Nếu directive chạm old cell thì preserve khi hòa giải được; nếu không thì ERR-C7-USER-PLAN-REWRITE-REQUIRED, không silent rewrite/PASS. Old state invalid/unparseable hoặc append/rewrite conflict là NEEDS_FIX/BLOCKED.
+        6. Surface/parse-back contract hiện hành chỉ áp appended day; APPEND không silent-normalize hoặc rerender old day chỉ để đổi family/presentation. Prior state không revalidate an toàn thì NEEDS_FIX theo lifecycle hiện hành và không trả partial render.
+        7. Explicit REWRITE current user có canonical pair SOURCE=USER, PRIORITY=USER_REWRITE và SOURCE_REFERENCE trỏ current user instruction; USER_STATE_TEXT/exact flag theo user wording. Chỉ rebuild matching old component/day cell, không dùng SOURCE=PERSISTED/OLD_DAY_LOCK, preserve unrelated cell, ghi concise component/range/USER_REWRITE trong SOURCE_NOTE, rerender impacted days/final condition và tăng revision khi semantic content đổi. Exact USER wording thắng generated selector. Pair sai hoặc range không match explicit target thì không PASS.
+        8. Final block date phải exact-match A14_DISCHARGE_DATE; C7_TREATMENT_END_LINE date phải exact-match A14_DISCHARGE_DATE. C7_DISCHARGE_CONDITION phải semantic-equal final plan; active component trong final block phải khớp, còn component terminal trước final day được phép vắng và không là mismatch. Sai bất kỳ invariant nào thì C7 không PASS và không tạo render-ready state.
+
+    ĐIỂM BỆNH:
+        1. Đúng ba dòng: “ĐIỂM BỆNH”; “Nhất trí với chẩn đoán và điều trị”; “Chủ nhiệm khoa.”; không bullet, không thiếu/lặp/đổi literal/thêm dòng.
+        2. Không user date: đặt mỗi thứ Tư trong course trừ ngày A14 discharge. User date chỉ hợp lệ trong course và không trùng discharge; không dùng fallback ngày 3.
+
+    Câu kết thúc điều trị:
+        1. Clinical gate đã PASS và A14 date hợp lệ thì end-line bắt buộc khác NONE, đúng một dòng canonical, date exact-match A14; gate fail thì end-line giữ NONE theo precedence, không áp template dưới đây.
+        2. Xin ra viện: “Bệnh nhân xin ra viện. Giải quyết cho bệnh nhân ra viện ngày dd/mm/yyyy.”.
+        3. Chuyển viện: “Bệnh nhân huyết động ổn định. Chuyển bệnh viện <TÊN_BỆNH_VIỆN> ngày dd/mm/yyyy.”. Hospital chỉ từ current user input rõ ràng; thiếu là NEEDS_FIX/BLOCKED với ERR-C7-TRANSFER-HOSPITAL-MISSING.
+        4. Không xin/chuyển viện: “Bệnh nhân ổn định. Giải quyết cho bệnh nhân ra viện ngày dd/mm/yyyy.”.
+        5. End-line không chứa clinical detail, thuốc, tư vấn, tái khám, dặn dò hoặc “Chủ nhiệm khoa.” và không nhúng vào C7_FOR_O4.
+
+C7_SPECIAL_RULES
+    CLINICAL_COMPONENT_COUNT=0 luôn fail gate trước render, không áp cấu trúc condition 4/5 bullet. Khi CLINICAL_COMPONENT_COUNT >= 1 và A14 date hợp lệ, C7_DISCHARGE_CONDITION bắt buộc lấy final semantic plan cell, TERMINAL_DAY/final state của mọi tracked component và cross-check active component trong block C7_FOR_O4 đúng ngày A14 discharge:
+        1. Condition có đúng 5 bullet “- ” theo thứ tự: toàn thân; một bullet gộp kết quả cuối của toàn bộ tracked SYMPTOM/OBJECTIVE_SIGN; huyết động; ăn uống-ngủ; đại tiểu tiện.
+            2. Bullet kết quả không rỗng, dùng lại cùng closed equivalence, category/subtype-filtered SAFE_FAMILY_LIST, complete-clause realization và unique parse-back validation của daily surface; giữ identity/location/side/radiation/attachment/member set/state của mọi tracked clinical component, parsed state exact-match FINAL_STATE và không diverge final plan. Chỉ complete clause PASS mới merge bằng dấu phẩy/chấm phẩy; không tạo bullet thứ sáu và không bỏ component terminal sớm. Component terminal trước final day được phép vắng trong final daily block; absence đó không là mismatch và condition vẫn ghi subtype-compatible terminal. Baseline numeric không được copy như final current value khi không có final source.
+        3. Active component trên final day phải semantic-equal final daily block; ROUTINE_DOMAIN final lấy đúng plan cell ở fixed bullet riêng, không đưa vào bullet clinical result.
+    Condition không là paragraph, không dùng “=” cho nội dung, không có ngày/decision discharge/tư vấn/tái khám/thuốc/theo dõi/dặn dò/chỉ định/chữ ký. Không dùng “ổn định” thay mức độ triệu chứng, không thêm untracked negative filler, không tráo component/state hoặc ép “hết” trái user end-status. Không ending intent thì condition vẫn NONE; COURSE_END_DATE không tự là discharge date.
+
+    Boundary and stale state:
+        1. C7 đọc A_GATE/full current A_STATE/A_MODULE_REV; A14 cung cấp ngày discharge canonical, không phải bệnh trình.
+        2. C7 không đọc C1-C6, output plan, output/rendered output cũ; không render/call/sửa O và không sửa A/C/G/O.
+        3. Không reuse plan/course/end-line/condition khi A14 date, canonical A14_TREATMENT_DAYS, A1 start date, A_MODULE_REV, target, ending type/status/course request, hospital, component identity/user plan/correction/withdrawal/exact wording/symptoms/end-status thay đổi. Khi canonical N có dữ liệu, không dùng old hidden/raw N thay field này.
+        4. A14 date bị xóa và không còn ending intent: end-line/condition có thể NONE. A14 date còn hợp lệ và clinical gate đã PASS: end-line/condition không được NONE; nếu clinical gate fail thì ba derived output bắt buộc NONE và không bị coi là plan-render/A14 mismatch.
+            5. Không reuse stale plan, unsafe persisted identity/surface, legacy nine-field state, duplicate/progression sai, plan-render mismatch, course vượt A14 date, end-line sai, condition sai final-day mapping hoặc embedded end-line-signature. Reconstruct stable identity/surface chỉ khi current authoritative source cho đúng một cách; lexical/modifier/attachment mơ hồ thì NEEDS_FIX, không silent reuse/migration/rewrite.
+        6. C7_SOURCE_NOTE chỉ tóm tắt concise provenance theo component/range USER/A_STATE/PERSISTED/DEFAULT/OLD_DAY_LOCK và limitation; không thay canonical plan, không prose mơ hồ và không render ra O.
+
+C7_CHECK_PASS_IF
+    PASS chỉ khi:
+        1. C7 trong C_RUN_ORDER; full C7_STATE đúng current 11-field schema, không patch/delta; revision/source revision hợp lệ; không field ngoài/nested key ngoài schema; logical CLINICAL_COMPONENT_COUNT >= 1.
+        2. C7_COMPONENT_PROGRESSION_PLAN đúng grammar/order/enum/date/count; component count/list/identity/source unique hợp lệ; range sorted/complete/in-course; mỗi component×day có đúng một state sau precedence/gap fill; overlap, final/terminal và provenance consistent.
+        3. Day 1 là source-compatible BASELINE_SOURCE_ASSERTION, first unsourced transition >= day 2; COURSE_BOUNDARY_TOKEN đã tách khỏi progression candidate, mỗi progression directive/component scope có đúng một class và scope/range/attachment đúng; EXPLICIT_RANGE_STATE có attached PROGRESSION_RANGE_MARKER duy nhất, FINAL_DAY_TARGET có attached final-only marker, WHOLE_COURSE_PROGRESSION có USER state nhưng không attached range/final marker dù course boundary có mặt, DEFAULT không chiếm USER whole-course cell. DEFAULT/FINAL_DAY_TARGET dùng reference floor hiện hành, WHOLE_COURSE_PROGRESSION R=1..4 dùng ceiling scheduler không có UNCHANGED sau day 1, WHOLE target RESOLVED chỉ terminal day N theo pre-terminal scheduler; exact/source/explicit range/OLD_DAY_LOCK không bị scheduler override. Reference/final rank hợp lệ; DEFAULT boundary shift trong limit 0/1/2 day theo N; progression monotonic/no relapse; comparable severity order không bị đảo; presentation selector không quyết định speed/transition/terminal; SOURCE_DEFINED unranked không bị tự nội suy.
+            4. C7_FOR_O4 khi có đúng ngày/header, mỗi ngày 4-6 physical bullet gồm bốn baseline group và 0-2 clinical-manifestation bullet đúng thứ tự/omission/merge; source đã decompose, stable identity/modifier attachment hợp lệ, phase schedule của từng component được xác định trước wording, day 1 là BASELINE_SOURCE_ASSERTION và generated improvement chỉ bắt đầu từ day 2; mỗi component có trajectory riêng, không nhảy/lùi phase, không kéo state component này sang component khác, stagger chỉ khi có căn cứ theo rule severity/stagger và phase 1-2 ngày không bắt buộc stagger; từng generated component/day clause thuộc positive closure/subtype-safe family, đúng cặp level equivalence, ưu tiên safe wording chưa dùng trong cùng phase trước khi lặp, multi-component wording không đồng loạt cùng nhóm `giảm/cải thiện` khi còn mixed alternative an toàn, có complete subject và degree/terminal state, parse-back duy nhất exact-match plan trước merge; functional adaptation giữ identity/function/location/side/attachment/phase; ăn/ngủ default `Ăn uống được, ngủ được.` khi user không yêu cầu progression, eating/sleep progression chỉ theo current user instruction và không kéo state của nhau; family/component/peer selector deterministic và proof-gated; OBJECTIVE_SIGN chỉ slot 2-3; terminal transition subtype-compatible xuất hiện đúng TERMINAL_DAY và component không xuất hiện sau đó trừ sourced reappearance; render semantic-equal plan sau terminal-omission rule; ĐIỂM BỆNH đúng, liên tục, không leak/end-line-signature nhúng.
+        5. A14 date chưa có và không ending intent: end-line = NONE, condition = NONE, course-only state/final target hợp lệ.
+        6. Ending intent mà A14 date chưa có: không PASS.
+        7. A14 date hợp lệ và clinical gate đã PASS: course cuối exact-match A14, số block bằng inclusive calendar difference + 1 và bằng positive A14_TREATMENT_DAYS nếu có, end-line khác NONE đúng literal/type/date; condition đúng 5 bullet với bullet clinical result không rỗng, chứa mọi tracked final state, mỗi generated clause dùng cùng closed equivalence/subtype filter/unique parse-back như daily surface, semantic-equal final plan và active final-day component; không course day sau A14.
+        8. User final state được ưu tiên đúng component; nếu không có contrary user status thì discharge default resolve eligible tracked SYMPTOM/OBJECTIVE_SIGN thành RESOLVED, còn ROUTINE_DOMAIN giữ final plan state; không chữa diagnosis/chronic disease; SOURCE_NOTE ghi rõ provenance/default range.
+            9. APPEND/REWRITE/REUSE/legacy đúng OLD_DAY_LOCK và current stable-identity/safe-surface contract; USER_REWRITE bắt buộc SOURCE=USER/PRIORITY=USER_REWRITE và exact target; relative range đủ unique same-component preceding anchor; plan/course/condition/source note không stale; không modifier stacking, baseline numeric currentization, invented residual, ambiguous attachment/merge, filler/ineligible sign/negative observation/synonym churn/unsourced qualifier/duplicate component across slot; không đọc output plan/output cũ/rendered output/hidden memory, không sửa A/C/G/O và C7_ERROR = NONE.
+            10. C7_RENDER_SCOPE đúng exact two-key schema/order/enum/list theo C7_RENDER_SCOPE_RULE; FULL bắt buộc []; DELTA header là exact complete source header, unique, mỗi header xuất hiện đúng một lần trong C7_FOR_O4 và list theo canonical source order. Selector exact-match current formal operation: CREATE đủ created blocks; APPEND đủ appended blocks; REWRITE/UPDATE đủ rebuilt/new/byte-changed visible blocks; REUSE không explicit FULL là DELTA/[]. C7_FOR_O4=NONE không được có selected header; selector không quyết định clinical plan/progression/phase/terminal/wording/content.
+
+C7_NEEDS_FIX_IF
+        NEEDS_FIX/BLOCKED khi state/current 11-field schema/revision hoặc C7_RENDER_SCOPE schema/mode/list/header/membership/uniqueness/order/current-operation consistency sai; plan grammar/key/order/enum/count/identity/source/range/cell/final/terminal/provenance sai; course-boundary/progression-range/final-only attachment không xác định duy nhất, COURSE_BOUNDARY_TOKEN bị dùng tự tạo EXPLICIT_RANGE_STATE/FINAL_DAY_TARGET, explicit/final class thiếu attached marker, WHOLE class bị course boundary loại sai, directive scope/class không an toàn, scheduler không đúng class, wording được chọn trước phase hoặc làm thay đổi phase, WHOLE USER improvement còn DEFAULT UNCHANGED sau day 1 hoặc WHOLE RESOLVED terminal trước day N không có higher-priority source; stable identity/modifier class/lexical split/location/side/radiation/attachment/member set mơ hồ; generated clause không thuộc positive closure, không có safe subtype family, sai cặp giảm/còn so với phase, lặp sớm khi còn safe form chưa dùng, nhiều component cùng dùng một nhóm câu dù còn mixed alternative an toàn, thiếu complete subject/degree/terminal state, parse-back không duy nhất hoặc khác plan; baseline không có source-compatible BASELINE_SOURCE_ASSERTION hoặc day 1 dùng generated improvement; phase lùi/nhảy không nguồn, tự bịa lighter/heavier, bỏ qua sourced stagger trong phase dài, kéo state giữa component hoặc giữa eating/sleep; functional sentence đổi identity/function/location/side/level; tự tạo ăn/ngủ kém hoặc progression ăn/ngủ khi user không yêu cầu; numeric anchor/measurement inference không an toàn; exact phrase conflict higher-order invariant; complete clause PASS riêng nhưng merge/reorder làm mất hoặc tráo attachment/state/component hoặc không fit trong hai clinical bullet; unsafe persisted/legacy surface không reconstruct duy nhất; CLINICAL_COMPONENT_COUNT=0 hoặc gate/output invariant hiện hành sai; user plan/range/gap/USER_REWRITE conflict; reference/final rank, bounded shift, monotonicity, severity order, unranked anchor, terminal omission, daily structure, condition sync, APPEND/REWRITE/OLD_DAY_LOCK, stale reuse hoặc date/course/transfer/ĐIỂM BỆNH/end-line invariant hiện hành sai.
+
+C7_ERROR_RULE
+    PASS thì C7_ERROR = NONE. NEEDS_FIX/BLOCKED phải ghi lỗi cụ thể và route source đúng nơi.
+    Selector defect dùng schema error, ERR-C7-PLAN-RENDER-MISMATCH hoặc ERR-C7-FOR-O4-FORMAT với exact reason/header/day/source; đây là deterministic C7-owned metadata defect, C7 phải recompute/fix và không yêu cầu user bổ sung clinical input.
+    Global failed-state precedence: sau khi evaluate gate, plan, progression, realization và validation, nếu bất kỳ unresolved C7 error nào làm C7_CHECK khác PASS thì trước khi trả full C7_STATE bắt buộc ghi exact C7_ERROR gồm code, component/source phrase, day/range nếu liên quan, reason và thông tin user cần cung cấp; đồng thời đặt C7_FOR_O4=NONE, C7_RENDER_SCOPE={MODE: DELTA, SELECTED_DAY_HEADERS: []}, C7_TREATMENT_END_LINE=NONE và C7_DISCHARGE_CONDITION=NONE. Rule này áp mọi error, gồm symptom-content, decomposition, surface compatibility, numeric anchor, merge, exact/plan conflict, stale/legacy và mọi cause NEEDS_FIX/BLOCKED; không trả partial/stale render. A14 PASS/date/course không được khôi phục ba field khi C7_CHECK khác PASS; chỉ C7_CHECK=PASS mới được populate derived output theo điều kiện hiện hành. Canonical progression plan/cell không lỗi có thể được preserve theo lifecycle, không thêm invalidation field.
+    Mã lỗi component/plan mới gồm:
+        1. ERR-C7-COMPONENT-IDENTITY: identity/category/label/location/side/source thiếu, trùng hoặc đổi sai.
+        2. ERR-C7-COMPONENT-PROGRESSION: cross-component state transfer, unsourced worsening/resurrection, terminal inconsistency hoặc state swap.
+        3. ERR-C7-USER-PLAN-CONFLICT: contradictory overlap, ambiguous correction/withdrawal hoặc incompatible same-priority directive.
+        4. ERR-C7-USER-PLAN-RANGE: day index/start-end/relative range/out-of-course sai; không truncate.
+        5. ERR-C7-USER-PLAN-REWRITE-REQUIRED: non-REWRITE directive chạm locked old cell và không preserve nhất quán.
+        6. ERR-C7-PLAN-STALE: persisted plan/source revision/identity/range/render không khớp current source.
+        7. ERR-C7-PHASE-ALLOCATION: incomplete cell map, invalid reference/bounded shift, default worsening, unsafe unranked anchor, final target sai, wording làm thay đổi phase, phase lùi/nhảy không nguồn, tự bịa lighter/heavier hoặc stagger không có nguồn/không đúng bounded rule.
+        8. ERR-C7-SYMPTOM-CONTENT: thiếu eligible clinical manifestation, CLINICAL_COMPONENT_COUNT=0/no component/routine-only/diagnosis-only/normal-negative-irrelevant sign, mất clinical component cuối sau update/withdrawal, filler, ineligible sign/OBJECTIVE_SIGN ngoài slot 2-3, duplicate slot, unsupported negative, synonym churn hoặc unsourced qualifier; khi thiếu clinical component phải kèm câu hỏi user bổ sung biểu hiện cần theo dõi.
+        9. ERR-C7-BASELINE-DAY1: day 1 dùng unsourced improvement wording hoặc sao chép khám sơ bộ quá mức.
+        10. ERR-C7-PLAN-RENDER-MISMATCH: C7_FOR_O4/condition không semantic-equal resolved/final plan, wrong level wording so với phase hoặc routine member render khác user plan.
+            11. ERR-C7-LEGACY-PLAN-MISSING: selected legacy nine-field state không reconstruct an toàn.
+            12. ERR-C7-COMPONENT-DECOMPOSITION: stable identity/modifier class/indivisible lexical term hoặc object-location-side-radiation attachment không xác định; nêu exact phrase, NEEDS_FIX/BLOCKED, hỏi user làm rõ phần mơ hồ và không tạo PASS render-ready output.
+            13. ERR-C7-SURFACE-COMPATIBILITY: sau controlled subtype rerender vẫn còn stacked modifier/double terminal/lost identity, subtype-unsafe wording, parse-back fail hoặc exact/nonexact surface không giữ đúng state; chỉ hỏi user khi C7 không tự rerender an toàn.
+            14. ERR-C7-NUMERIC-ANCHOR: baseline/current time reference, count/value/unit attachment hoặc measurement eligibility mơ hồ; không bịa số, hỏi current value/count hoặc xin phép dùng nonnumeric comparison khi phù hợp.
+            15. ERR-C7-SURFACE-MERGE: complete clauses không fit an toàn trong hai clinical bullet hoặc merge/reorder làm mất, tráo attachment/state/component/routine member; không tạo bullet thứ ba/drop component, hỏi user ưu tiên/nhóm lại/làm rõ.
+            16. ERR-C7-EXACT-WORDING-CONFLICT: targeted exact phrase xung đột identity/source/range/attachment invariant; không silent normalize, hỏi user xác nhận target/state wording. Overlap/scope conflict vẫn có thể dùng ERR-C7-USER-PLAN-CONFLICT.
+    ERR-C7-DAILY-DUPLICATE dùng cho premature repetition của generated clinical wording trong cùng phase khi vẫn còn safe alternative chưa dùng hoặc nhiều component cùng một ngày đồng loạt dùng cùng nhóm câu dù còn mixed alternative an toàn; không dùng raw-text-only duplicate validator và không đánh lỗi routine/exact/source-defined/count=1 hoặc reuse sau khi safe forms đã exhausted. ERR-C7-STALE-PASS dùng khi reused/persisted PASS không còn đạt current phase/wording/routine-member contract.
+    Giữ các mã hiện hành không trùng nghĩa: ERR-C7-FOR-O4-FORMAT, ERR-C7-DAILY-DUPLICATE, ERR-C7-PROGRESSION, ERR-C7-APPEND-CONTINUITY, ERR-C7-APPEND-MISSING-OLD-C7-FOR-O4, ERR-C7-APPEND-OLD-C7-FOR-O4-INVALID, ERR-C7-APPEND-OLD-LAST-DAY-PARSE, ERR-C7-APPEND-OLD-LAST-DATE-PARSE, ERR-C7-APPEND-PRIOR-DAYS-REWRITTEN, ERR-C7-APPEND-REWRITE-AMBIGUITY, ERR-C7-DIEM-BENH-FORMAT, ERR-C7-DIEM-BENH-WRONG-POSITION, ERR-C7-DIEM-BENH-ON-DISCHARGE-DATE, ERR-C7-DISCHARGE-CONDITION-NOT-BULLET, ERR-C7-DISCHARGE-CONDITION-WRONG-LINE-COUNT, ERR-C7-DISCHARGE-CONDITION-WRONG-STRUCTURE, ERR-C7-DISCHARGE-CONDITION-FORBIDDEN-CONTENT, ERR-C7-DISCHARGE-CONDITION-SYNC, ERR-C7-DISCHARGE-DATE-MISSING, ERR-C7-DISCHARGE-DATE-FORMAT, ERR-C7-COURSE-START-DATE-MISSING, ERR-C7-COURSE-AFTER-DISCHARGE-DATE, ERR-C7-TREATMENT-END-LINE-MISSING, ERR-C7-TREATMENT-END-LINE-FORMAT, ERR-C7-TREATMENT-END-LINE-DATE-MISMATCH, ERR-C7-TREATMENT-END-LINE-LEAK, ERR-C7-TRANSFER-HOSPITAL-MISSING và ERR-C7-STALE-PASS.
+
+C7_REUSE_RULE
+        CREATE: tính clinical gate trước; CLINICAL_COMPONENT_COUNT=0 thì tạo error-state full 11-field với ba derived output NONE và C7_RENDER_SCOPE=DELTA/[], không tạo PASS plan/render; gate PASS mới decompose/build stable identity/resolve/safe-realize/validate/merge complete plan và render course/end-line/condition/source note, đặt C7_REV = 1 và C7_SOURCE_A_REV theo actual subset của A1_REV/A14_REV đã dùng.
+        UPDATE: full state mới; revalidate stable identity và safe surface, rebuild affected plan cell/range và derived course/condition/source note, không giữ stale unsafe clause, preserve unaffected cell. Nếu update/correction/withdrawal làm mất clinical component cuối thì NEEDS_FIX/BLOCKED, ba derived output NONE, hỏi user bổ sung và không REUSE prior PASS; tăng C7_REV khi component/plan/source semantic/course/final/correction/withdrawal/migration/check/render thật sự đổi.
+        REUSE: chỉ current 11-field schema sau full current-contract revalidation và CLINICAL_COMPONENT_COUNT >= 1; persisted label/render không đạt stable identity/compatibility không REUSE/PASS. Chỉ reconstruct khi authoritative current source cho đúng một cách, mơ hồ thì NEEDS_FIX. Routine-only/no-component persisted state không REUSE/PASS. Nếu persisted state còn stale derived output nhưng current gate fail thì clear cả ba output về NONE và trả error state, không dùng A14 để hợp thức hóa. Plan identity/range/source và plan↔course↔condition exact semantic hợp lệ; A14 date/start/course/end-line/current intent/source revision không stale/mâu thuẫn; giữ C7_REV khi nội dung thật không đổi.
+        APPEND: chỉ tiếp tục khi current eligible clinical component còn tồn tại; preserve OLD_DAY_BLOCKS và corresponding old plan cell hợp lệ theo OLD_DAY_LOCK, không silent normalize/rewrite old rendered days; appended days phải safe-realize theo current contract. Nếu old identity/render incompatible và current contract không xác nhận duy nhất thì NEEDS_FIX; explicit REWRITE bắt buộc khi OLD_DAY_LOCK ngăn sửa. Current plan chỉ áp new day, không rewrite/cắt old days âm thầm. Clinical component bị rút hết thì block, không append routine-only output.
+    REWRITE: chỉ khi current user explicit; rewritten cell bắt buộc SOURCE=USER, PRIORITY=USER_REWRITE và SOURCE_REFERENCE trỏ current instruction; chỉ matching old component/day cell đổi, unrelated cell giữ nguyên, impacted day/final condition rerender và revision tăng khi semantic content đổi thật. Withdrawal/rewrite làm mất clinical component cuối phải fail gate sau khi áp directive; không tự giữ component đã rút.
+        Legacy: C7 không nằm C_RUN_ORDER thì không migrate. Khi C7 chạy, prior valid 10-field state chỉ thiếu C7_RENDER_SCOPE không REUSE/PASS current 11-field schema nhưng được full current-contract revalidation, preserve safe C7_COMPONENT_PROGRESSION_PLAN/C7_FOR_O4/canonical fields, tạo current C7_RENDER_SCOPE và emit full 11-field UPDATE mà không clinical rewrite. Legacy nine-field state không REUSE/PASS current schema; chỉ reconstruct stable identity và full 11-field UPDATE từ current authoritative A/input khi duy nhất, không suy lexical modifier/attachment, không migration schema và không silent rewrite old days. Không có reconstructable clinical component thì dùng ERR-C7-SYMPTOM-CONTENT; không reconstruct plan/surface an toàn vì legacy evidence thì ERR-C7-LEGACY-PLAN-MISSING hoặc ERR-C7-PLAN-STALE; đều NEEDS_FIX/BLOCKED và không đoán.
+    Failed lifecycle output: CREATE error; current UPDATE validation failure; failed REUSE; APPEND không hoàn tất an toàn; REWRITE còn conflict/validation failure; withdrawal gate failure; legacy reconstruction failure; hoặc SOURCE_DEFINED/SOURCE_WORSENING ambiguity đều áp Global failed-state precedence và clear cả ba derived output. UPDATE/REUSE không giữ derived output revision trước; APPEND không trả partial old-day render thiếu new failed days dù OLD_DAY_LOCK vẫn bảo toàn canonical old plan/content; REWRITE giữ unrelated canonical plan cell nhưng không giữ stale render-ready output.
+
+C7_REV_RULE
+    CREATE đặt C7_REV = 1; UPDATE tăng revision khi true plan/content/migration/correction/withdrawal/derived render/check đổi; REUSE giữ revision. C7_SOURCE_A_REV phản ánh current actual subset của A1_REV/A14_REV đã dùng; source-revision-only metadata change không tự tăng C7_REV nếu content/check không đổi. Không formal run thì không migrate/in/patch state.
+    Valid C7_RENDER_SCOPE-only recomputation/replacement là presentation-metadata refresh và không tăng C7_REV khi plan, full C7_FOR_O4, clinical wording, end-line, condition, CHECK và ERROR không đổi. Quy tắc này áp DELTA↔FULL, REUSE reset và prior-valid-10-field selector-only completion; nếu selector defect làm CHECK/ERROR thật sự đổi thì theo revision rule hiện hành.
+
+C7_END
+    Sau C7, quay lại G_STATE.C_RUN_ORDER để xác định module C kế tiếp. Nếu C7 là C cuối thì STEP C kết thúc theo contract chung. C7 không tự chuyển step hoặc sửa A/C/G/O.
+
+<<< END C7
+
+####################################################################################################
+
+C8 — GỢI Ý THUỐC / NHÓM THUỐC THAY THẾ
+Version: BA S-G-A-C-O V4 compact allowlist
+Update: 25/07/2026 GMT+7 — canonical alternative-medication producer for O5
+
+>>> READ-LOCK: C8
+- C8 chỉ chạy khi user yêu cầu trực tiếp C8 hoặc O5 được plan và dependency closure thêm C8.
+- C8 là clinical processor, chỉ tạo full canonical C8_STATE; O5 là renderer.
+- C8 không sửa thuốc chính, không tạo đơn/cách dùng và không chạy A15/C3/O5/O11.
+<<< END READ-LOCK: C8
+
+C8_ROLE
+    C8 đọc thuốc chính, treatment target và known patient factors đã được A15 chuẩn hóa; dùng kiến thức chuyên môn nội tại để xác định thuốc/nhóm thuốc khác nhóm có thể cân nhắc thay thế; loại lựa chọn không phù hợp với dữ kiện đã biết; tạo canonical C8_STATE cho O5.
+    Kiến thức chung không được biến thành dữ kiện cụ thể của bệnh nhân. Alternative chưa thuộc đơn hiện tại, không dùng đồng thời và không tự thay thuốc chính.
+
+C8_ALLOWED_SOURCE
+    C8 chỉ đọc G_STATE cho metadata/C_RUN_ORDER/O_RENDER_LIST/O_RENDER_ORDER; A_GATE_STATUS phải = PASS; current full A_STATE/A_MODULE_REV cho canonical patient facts và A15 context; current A15_STATE với A15_REV, A15_HAS_MEDICATION, A15_MEDICATION_LIST, A15_TREATMENT_COVERAGE, A15_INDICATION_CHECK, A15_CONTRAINDICATION_CHECK, A15_INTERACTION_CHECK, A15_DUPLICATION_CHECK, A15_SAFETY_NOTE, A15_TO_C3, A15_CHECK, A15_ERROR; current user input trong phạm vi hẹp của alternative-request context; current C8_STATE cho UPDATE/REUSE; và file/module C8.
+    Alternative-request context được phép chỉ gồm alternative intent, target/constraint thay thế user nêu, yêu cầu khác thuốc/hoạt chất/nhóm, thuốc/nhóm user muốn cân nhắc và explicit substitution context của current ROUND. Source priority: canonical patient facts từ current A_STATE; canonical main medication/target từ current A15_STATE; sau đó current input chỉ cho alternative intent/constraints.
+    A15_STATE là clinical main-medication source chính và bắt buộc. Raw input không được override canonical patient facts, tạo patient fact thay A_STATE, bỏ qua current A15_STATE, tự xác nhận chống chỉ định/tương tác không có trong canonical facts, tự chọn/sửa main medication, tạo dose/prescription, direct-call C3 hoặc write A15. Nếu raw constraint mâu thuẫn canonical state hoặc không đủ rõ, C8_CHECK=NEEDS_FIX với C8_ERROR cụ thể; không fabricate.
+    C8 không đọc C3_STATE, C khác, O5/O11/output cũ, rendered output, web/raw external data làm patient facts hoặc hidden memory.
+
+C8_RUN_CONDITION
+    C8 chạy khi user yêu cầu trực tiếp C8 hoặc O5 nằm trong O_RENDER_LIST/O_RENDER_ORDER và dependency closure thêm C8; trường hợp khác không tự chạy.
+    Clinical RUN yêu cầu A_GATE_STATUS = PASS; A15_CHECK=PASS; A15_ERROR=NONE; A15_HAS_MEDICATION=YES; A15_MEDICATION_LIST khác NONE; canonical A15_TO_C3 non-empty/current/nhất quán.
+    Nếu không có thuốc chính: C8_CHECK=NEEDS_FIX; C8_ERROR=NO_PRIMARY_MEDICATION_FOR_ALTERNATIVE_SELECTION; không tự tạo thuốc chính.
+
+C8_ALLOWED_ACTION_AND_WRITE
+    C8 CREATE/UPDATE/REUSE/CHECK full C8_STATE và tạo alternative options. C8 chỉ ghi C8_STATE.
+    C8 không sửa A15_STATE/A15_TO_C3, thay/thêm thuốc chính, thêm alternative vào đơn hiện tại, chuyển alternative sang C3, tạo prescription/dose/route/frequency/duration/adjustment, bịa patient factor hoặc chạy module khác.
+
+C8_STATE_SCHEMA
+    C8_STATE có đúng field:
+        STATE_VERSION: <G_STATE.STATE_VERSION>
+        C8_REV: <revision nội dung thật>
+        C8_SOURCE_A_REV: <dependency-subset map, bắt buộc A15_REV + actual relevant A1-A14>
+        C8_SOURCE_A15_REV: <A15_REV đã dùng>
+        C8_PRIMARY_MEDICATIONS_FROM_A15: <normalized primary inventory>
+        C8_ALTERNATIVE_MEDICATION_OPTIONS: <alternative options hoặc no-valid-alternative item>
+        C8_CHECK: PASS | NEEDS_FIX
+        C8_ERROR: NONE | <lỗi cụ thể>
+
+C8_PRIMARY_MEDICATIONS_FROM_A15_RULE
+    Mỗi item có PRIMARY_MEDICATION, TREATMENT_TARGET, SOURCE_ACTION, KNOWN_PATIENT_FACTORS; bảo toàn identity/target từ A15_TO_C3 và không tự đổi thuốc.
+
+C8_ALTERNATIVE_MEDICATION_OPTIONS_RULE
+    Mỗi primary medication/treatment target có option item gồm:
+        PRIMARY_MEDICATION
+        TREATMENT_TARGET
+        ALTERNATIVE_MEDICATION_OR_GROUP
+        ALTERNATIVE_TYPE = SPECIFIC_MEDICATION | THERAPEUTIC_CLASS
+        ALTERNATIVE_THERAPEUTIC_CLASS
+        RELATION_TO_PRIMARY = DIFFERENT_THERAPEUTIC_CLASS
+        WHEN_TO_CONSIDER = PRIMARY_UNAVAILABLE | PRIMARY_NOT_TOLERATED | PRIMARY_CANNOT_BE_CONTINUED | OTHER_VALID_SUBSTITUTION_CONTEXT
+        RATIONALE
+        KNOWN_CONTRAINDICATION_CHECK
+        KNOWN_INTERACTION_CHECK
+        KNOWN_DUPLICATION_CHECK
+        NO_VALID_ALTERNATIVE_REASON
+        USE_STATUS = ALTERNATIVE_ONLY_NOT_CURRENT_PRESCRIPTION | NO_VALID_ALTERNATIVE_IDENTIFIED
+        REQUIRES_A15_RESELECTION = YES
+    Nếu không có option phù hợp: ALTERNATIVE_MEDICATION_OR_GROUP=NONE; NO_VALID_ALTERNATIVE_REASON cụ thể; USE_STATUS=NO_VALID_ALTERNATIVE_IDENTIFIED; REQUIRES_A15_RESELECTION=YES. Không bịa option và không bắt số lượng cố định.
+    Mọi option cùng TREATMENT_TARGET, khác therapeutic class, không phải chính hoạt chất đang dùng, không dùng đồng thời và không thuộc đơn hiện tại. Known contraindication, serious interaction hoặc inappropriate duplication làm option bị loại.
+    C8 không tạo dosing/prescription. Nếu user/bác sĩ chọn option, lựa chọn chỉ trở thành current user input ROUND sau; A15 phải reselect/recheck, tăng revision và tạo A15_TO_C3 mới trước C3/O11.
+
+C8_CHECK_PASS_IF
+    PASS khi source/current revisions hợp lệ; primary inventory khớp A15; mỗi option cùng target/khác class/không phải primary; known safety checks hoàn tất; no-option có lý do; không có dosing/prescription/fabrication/upstream mutation; full schema đúng; C8_ERROR=NONE.
+
+C8_NEEDS_FIX_IF
+    NEEDS_FIX khi A15 invalid/không có thuốc chính/source stale; item thiếu field; option sai target/cùng class/là primary; known contraindication/serious interaction/duplication chưa xử lý; bịa patient factor; tạo cách dùng/đơn thuốc; sửa upstream; schema/revision hoặc CHECK/ERROR pair sai.
+
+C8_ERROR_RULE
+    PASS => C8_ERROR=NONE. NEEDS_FIX => C8_ERROR cụ thể theo source, primary medication, target, alternative, known safety, forbidden dosing/prescription, fabrication, schema hoặc revision.
+
+C8_LIFECYCLE_RULE
+    CREATE tạo full state, C8_REV=1. UPDATE chỉ tăng C8_REV khi primary medication, target, options, safety, CHECK hoặc ERROR thật sự đổi. Source-map-only refresh giữ C8_REV; REUSE sau current-contract revalidation vẫn in full state với current STATE_VERSION và source metadata hiện hành.
+
+C8_END
+    C8 không tự gọi O5/A15/C3/O11. Sau C8 quay lại C_RUN_ORDER; nếu là C cuối thì kết thúc STEP C theo contract chung.
+<<< END C8
+
+####################################################################################################
+C_SOURCE_REVISION_CONSISTENCY_PATCH
+Version: canonical selected-C contract — 17/08/2026
+
+C_PATCH_PRECEDENCE
+    Phần này là current common structural/source/lifecycle authority và thắng wording generic cũ về full A_MODULE_REV hoặc source-only REV increment khi mâu thuẫn. C selectivity, selected-set atomicity và clinical ownership giữ nguyên.
+
+C_SOURCE_A_REV_COMMON_TYPE
+    Với selected C1-C8, Cx_SOURCE_A_REV là DEPENDENCY-SUBSET MAP chỉ gồm `Ax_REV = current Ax_STATE.Ax_REV` cho actual canonical A dependencies đã đọc để tạo current content/CHECK/ERROR. Không scalar, không unconditional full A map, không chứa user/fake-user revision, G revision, ROUND_ID, STATE_VERSION, own Cx_REV, old-self REV hoặc unrelated A.
+    Producer local declaration phân biệt eligible A, actual-used A, current direct input, G metadata và old self-state; chỉ actual-used A vào map. Recorded relevant drift requires current-contract revalidation; unrelated unrecorded Ax drift không tự stale.
+    C6 ngoại lệ shape: khi genuinely independent of A dùng đúng sentinel NONE hoặc NOT_APPLICABLE theo branch contract hiện hành; khi đọc A dùng subset map; không sentinel + map.
+
+C_STATE_AND_REV_UNIVERSAL_RULE
+    Mỗi selected emitted Cx_STATE trong ROUND có STATE_VERSION=current G_STATE.STATE_VERSION. CREATE Cx_REV=1. UPDATE increment chỉ khi semantic producer content/CHECK/ERROR thật đổi. REUSE/source refresh sau current-contract revalidation giữ Cx_REV nếu semantic state unchanged, đồng thời in full state với current STATE_VERSION và refreshed actual source map.
+    New ROUND, STATE_VERSION refresh hoặc source-map-only metadata refresh không tự increment. Unselected C không chạy/in/refresh STATE_VERSION/source/REV.
+
+C1_LOCAL_DEPENDENCIES
+    Eligible A1-A15 theo allowed-source warning/content contract; record only states actually used for C1_FINAL/CHECK/ERROR, không record vì merely accessible.
+
+C2_LOCAL_DEPENDENCIES
+    Eligible A1-A15 theo red-flag/warning allowed-source contract; record only actual used revisions.
+
+C3_LOCAL_DEPENDENCIES
+    A15_REV mandatory và luôn có trong C3_SOURCE_A_REV vì sole canonical medication source là current valid A15_STATE.A15_TO_C3. Chỉ thêm specific Ax patient facts nếu C3 contract thật sự đọc chúng cho regimen safety. Full snapshot availability không tạo dependency.
+    Không raw medication, C8/C/O fallback, identity selection/change. A15 owns product/regimen-family identity; C3 owns STRENGTH_USED, dose, frequency, route, timing, duration, max, adjustment, warnings, monitoring, advice.
+
+C4_LOCAL_DEPENDENCIES
+    Actual-used subset A1-A11 cho relevant manifestations/context và A14 cho existing paraclinical results. Không copy A12 diagnosis thành syndrome, không coi A13 planned tests là results, không dùng A15 trừ explicit local authorization. Boundary semantics giữ nguyên.
+
+C5_LOCAL_DEPENDENCIES
+    Eligible broad A1-A15 context; record actual-used only, thường A12 + relevant clinical A + A14 results. Source-map-only change với semantic content/CHECK/ERROR unchanged giữ C5_REV.
+
+C6_LOCAL_DEPENDENCIES
+    Patient A read -> actual subset map. Genuinely A-independent -> preserve exact NONE/NOT_APPLICABLE sentinel branch, never combine.
+
+C7_LOCAL_DEPENDENCIES_AND_MIGRATION
+    Direct eligible subset chỉ A1_REV khi admission/start context used và A14_REV khi discharge date/treatment days/end consistency used. Không unrelated A. C7 legacy/OLD_DAY_LOCK/APPEND/REWRITE/surface safeguards thắng generic migration; generic migration không suy yếu chúng.
+
+C8_LOCAL_DEPENDENCIES_AND_MIRROR
+    C8_SOURCE_A_REV bắt buộc A15_REV + actual relevant A1-A14 patient-fact subset when used. Current alternative-request input là direct input, không map member.
+    Giữ C8_SOURCE_A15_REV chỉ như mirrored direct-source trace, không independent revision authority; bắt buộc C8_SOURCE_A15_REV == C8_SOURCE_A_REV.A15_REV, mismatch là technical error.
+    C8_REV increment chỉ khi true semantic state đổi: primary inventory, target/options, alternatives, safety, CHECK hoặc ERROR. Source metadata-only refresh giữ C8_REV/current STATE_VERSION.
+
+C_GATE_CURRENT_CONTRACT
+    Preserve canonical C_GATE_STATUS, C_GATE_ERROR, C_GATE_NEXT_STEP. C_GATE validate current selected set only: producer schemas by reference; emitted current STATE_VERSION; subset-map/C6 sentinel shape; recorded current dependency equality; CHECK/ERROR; C8 mirror equality; selected-set atomicity. Gate không competing content schema, không repair producer. C_GATE_NEXT_STEP là prose, không alias S NEXT_ACTION.
+
+C_CURRENT_CONTRACT_MIGRATION_AND_RECOVERY
+    Detect mismatch và direct-route C owner. Reconstructable selected-C schema/source/CHECK migration từ current canonical A -> AUTO_RECOVERABLE same ROUND, no user, rebuild full current selected C_RUN_ORDER rồi C_GATE. Metadata/order/STATE_VERSION/source-only migration giữ Cx_REV; semantic content/CHECK/ERROR change mới increment. USER_INPUT_REQUIRED chỉ genuine unavailable non-fabricable fact.
+    Nếu C phát hiện A defect: stop C/O, route A/A_GATE, full A/A_GATE PASS, rerun full selected C set/C_GATE. Consumer không repair producer. Retry chỉ khi state/schema/dependency subset/source/error class/owner action progress.
